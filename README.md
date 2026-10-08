@@ -147,6 +147,8 @@ prints only counts.
 | | `y` | Copy the selected message |
 | | `Y` | Copy with `[time sender]` |
 | | `v` | Start or cancel a range; `y`/`Y` then copy the range |
+| | `Enter` on a failed message | Put its text back in the input to resend |
+| | `x` on a failed message | Discard it |
 | | `Esc` | Cancel range / back |
 
 Pasting uses bracketed paste, so multi-line text lands in the input box and
@@ -164,8 +166,8 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
 |---|---|
 | `sending…` | Handed to the bridge, waiting for the message to appear in chat.db |
 | time | Confirmed: the message is in chat.db |
-| `✗ failed` | osascript failed, or Messages marked it with an error |
-| `? unconfirmed` | No echo after 30s, or the connection dropped mid-send |
+| `✗ failed` | osascript failed (the reason flashes in the status bar), or Messages marked it with an error. A failed message keeps its place as newer ones arrive; select it and press Enter to resend or `x` to discard |
+| `? unconfirmed` | The bridge said it sent, but no copy appeared in chat.db within 30s; or the bridge never answered (it waits up to 2 minutes for Messages, e.g. for a permission dialog); or the connection dropped mid-send |
 | `10:42 ✓` / `10:42 ✓✓` | After the time on every message you sent: delivered / read (`Read` needs the other person to share read receipts) |
 | `10:42 SMS` | Went over SMS; text messages are green, iMessages blue |
 | `10:42 ✗` | Messages accepted the send but reported a failure later; the status bar flashes once, and the chat list shows `✗` |

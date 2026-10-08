@@ -18,7 +18,11 @@ use std::time::{Duration, Instant};
 
 pub const HISTORY_PAGE: u32 = 50;
 const CHAT_LIMIT: u32 = 200;
+/// After the bridge reports a send, how long to wait for its copy in chat.db.
 const UNCONFIRMED_AFTER: Duration = Duration::from_secs(30);
+/// How long the bridge may take to answer a send at all (it waits up to 2
+/// minutes for osascript, e.g. for a permission dialog).
+const SEND_TIMEOUT: Duration = Duration::from_secs(150);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const FLASH_FOR: Duration = Duration::from_secs(3);
@@ -73,6 +77,8 @@ pub struct Pending {
     /// Highest rowid seen when this was sent; its echo must be newer.
     pub after_rowid: i64,
     pub sent_at: Instant,
+    /// When the bridge reported the send as done.
+    pub acked_at: Option<Instant>,
     pub ts: i64,
     pub state: PendState,
 }
@@ -343,8 +349,9 @@ impl App {
             match kind {
                 ReqKind::Send { local_id } => {
                     if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
-                        p.state = PendState::Failed(err);
+                        p.state = PendState::Failed(err.clone());
                     }
+                    self.hint(format!("✗ send failed: {err}"), now);
                 }
                 ReqKind::History { .. } => {
                     if let Some(v) = &mut self.view {
@@ -367,8 +374,12 @@ impl App {
                     self.ingest(m, false, false, now);
                 }
             }
-            // Confirmation comes from the echo in chat.db, not from this response.
-            ReqKind::Send { .. } => {}
+            // Confirmation comes from the echo in chat.db; this only starts the clock.
+            ReqKind::Send { local_id } => {
+                if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
+                    p.acked_at = Some(now);
+                }
+            }
         }
     }
 
@@ -391,7 +402,11 @@ impl App {
             self.effects.push(Effect::Reconnect);
         }
         for p in &mut self.pending {
-            if p.state == PendState::Sending && now.duration_since(p.sent_at) > UNCONFIRMED_AFTER {
+            let overdue = match p.acked_at {
+                Some(acked) => now.duration_since(acked) > UNCONFIRMED_AFTER,
+                None => now.duration_since(p.sent_at) > SEND_TIMEOUT,
+            };
+            if p.state == PendState::Sending && overdue {
                 p.state = PendState::Unconfirmed;
             }
         }
@@ -828,14 +843,39 @@ impl App {
         let Some(v) = &self.view else {
             return Vec::new();
         };
-        let mut items: Vec<Item> = v.messages.iter().map(Item::Msg).collect();
+        // Placeholders sit at their send time, so a failed one moves up as
+        // newer messages arrive instead of staying pinned to the bottom.
+        let mut items: Vec<(i64, i64, Item)> = v
+            .messages
+            .iter()
+            .map(|m| (m.ts, m.rowid, Item::Msg(m)))
+            .collect();
         items.extend(
             self.pending
                 .iter()
                 .filter(|p| p.target == v.target)
-                .map(Item::Pending),
+                .map(|p| (p.ts, i64::MAX, Item::Pending(p))),
         );
-        items
+        items.sort_by_key(|(ts, seq, _)| (*ts, *seq));
+        items.into_iter().map(|(_, _, it)| it).collect()
+    }
+
+    /// Whether the messages pane's selection is a failed or unconfirmed placeholder.
+    pub fn selected_pending_visible(&self) -> bool {
+        self.selected_pending().is_some_and(|id| {
+            self.pending
+                .iter()
+                .any(|p| p.local_id == id && p.state != PendState::Sending)
+        })
+    }
+
+    /// Selected placeholder in the messages pane, if any.
+    fn selected_pending(&self) -> Option<u64> {
+        let sel = self.view.as_ref()?.sel?;
+        match self.items().get(sel)? {
+            Item::Pending(p) => Some(p.local_id),
+            Item::Msg(_) => None,
+        }
     }
 
     fn clamp_sel(&mut self) {
@@ -916,6 +956,7 @@ impl App {
             text,
             after_rowid: self.max_seen,
             sent_at: now,
+            acked_at: None,
             ts: chrono::Utc::now().timestamp(),
             state: PendState::Sending,
         });
@@ -1203,7 +1244,28 @@ impl App {
                     self.focus = Focus::List;
                 }
             }
-            KeyCode::Char('i') | KeyCode::Enter => self.focus = Focus::Input,
+            KeyCode::Enter => {
+                // A failed or unconfirmed message goes back into the input to resend.
+                let restore = self.selected_pending().and_then(|id| {
+                    let i = self.pending.iter().position(|p| p.local_id == id)?;
+                    (self.pending[i].state != PendState::Sending)
+                        .then(|| self.pending.remove(i).text)
+                });
+                if let Some(text) = restore {
+                    self.input = text;
+                    self.cursor = self.input.len();
+                    self.clamp_sel();
+                }
+                self.focus = Focus::Input;
+            }
+            KeyCode::Char('i') => self.focus = Focus::Input,
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if let Some(id) = self.selected_pending() {
+                    self.pending
+                        .retain(|p| p.local_id != id || p.state == PendState::Sending);
+                    self.clamp_sel();
+                }
+            }
             _ => {
                 self.global_key(key, now);
             }
@@ -1574,10 +1636,33 @@ mod tests {
             PendState::Failed("osascript failed".into())
         );
 
+        // Still "sending" while the bridge hasn't answered (it may be waiting
+        // on a permission dialog); unconfirmed 30s after it says it sent.
         app.on_paste("two");
         app.on_key(key(KeyCode::Enter), now);
-        app.tick(now + Duration::from_secs(31));
+        let id = requests(&mut app)[0].0;
+        app.tick(now + Duration::from_secs(60));
+        assert_eq!(app.pending[1].state, PendState::Sending);
+        app.on_line(
+            &line(&Response {
+                id,
+                ok: Some(true),
+                service: Some("iMessage".into()),
+                ..Default::default()
+            }),
+            now + Duration::from_secs(60),
+        );
+        app.tick(now + Duration::from_secs(89));
+        assert_eq!(app.pending[1].state, PendState::Sending);
+        app.tick(now + Duration::from_secs(91));
         assert_eq!(app.pending[1].state, PendState::Unconfirmed);
+
+        // No answer at all: give up after the bridge's own timeout.
+        app.on_paste("three");
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        app.tick(now + Duration::from_secs(151));
+        assert_eq!(app.pending[2].state, PendState::Unconfirmed);
     }
 
     #[test]
@@ -1984,6 +2069,63 @@ mod tests {
             "✗ not delivered to +15550000002"
         );
         assert_eq!(preview(app.chats[0].last.as_ref().unwrap()), "✗ you: hi");
+    }
+
+    #[test]
+    fn failed_message_keeps_its_place_and_can_be_resent_or_discarded() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now);
+        let id = requests(&mut app)[0].0;
+        app.on_line(
+            &line(&Response {
+                id,
+                messages: Some(vec![msg(10, 1, false, "hi")]),
+                ..Default::default()
+            }),
+            now,
+        );
+        app.on_paste("oops");
+        app.on_key(key(KeyCode::Enter), now);
+        let id = requests(&mut app)[0].0;
+        app.on_line(&line(&Response::error(id, "osascript failed: boom")), now);
+        assert_eq!(
+            app.flash.as_ref().unwrap().0,
+            "✗ send failed: osascript failed: boom"
+        );
+
+        // A newer incoming message lands below the failed one, not above it.
+        let mut later = msg(11, 1, false, "newer");
+        later.ts = chrono::Utc::now().timestamp() + 60;
+        app.on_line(&line(&Event::NewMessage { message: later }), now);
+        let items = app.items();
+        assert!(matches!(items[1], Item::Pending(_)));
+        assert!(matches!(items[2], Item::Msg(m) if m.text == "newer"));
+
+        // Enter on it puts the text back for resending.
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Tab), now); // List -> Messages
+        app.on_key(key(KeyCode::Char('k')), now); // onto the failed item
+        assert!(matches!(
+            app.items()[app.view.as_ref().unwrap().sel.unwrap()],
+            Item::Pending(_)
+        ));
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.input, "oops");
+        assert!(app.pending.is_empty());
+        assert_eq!(app.focus, Focus::Input);
+
+        // x discards a failed one; a message still sending can't be discarded.
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Tab), now);
+        app.on_key(key(KeyCode::Char('x')), now);
+        assert_eq!(app.pending.len(), 1, "still sending");
+        let id = app.pending[0].local_id;
+        app.pending[0].state = PendState::Failed("x".into());
+        app.on_key(key(KeyCode::Char('x')), now);
+        assert!(app.pending.is_empty());
+        let _ = id;
     }
 
     #[test]

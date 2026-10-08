@@ -27,7 +27,9 @@ const TO_CHAT: &str = r#"on run argv
 tell application "Messages" to send (item 2 of argv) to chat id (item 1 of argv)
 end run"#;
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// Long enough to walk to the Mac and answer an Automation permission
+/// dialog: killing osascript dismisses the dialog.
+const TIMEOUT: Duration = Duration::from_secs(120);
 
 pub enum Target<'a> {
     /// A phone number or email; tries iMessage, then SMS.

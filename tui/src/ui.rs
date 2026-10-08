@@ -289,10 +289,6 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                     false,
                     false,
                 );
-                if let PendState::Failed(e) = &p.state {
-                    let e = truncate(e, width.saturating_sub(2));
-                    lines.push(Line::from(e.red().dim()).right_aligned());
-                }
             }
         }
         if Some(i) == last_mine
@@ -605,7 +601,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let hints = match (app.popup.is_some(), app.focus) {
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
         (_, Focus::List) => "j/k move  Enter open  n new  Tab focus  q quit",
-        (_, Focus::Messages) => "j/k select  y copy  Y +meta  v range  PgUp older  Esc back",
+        (_, Focus::Messages) => {
+            if app.selected_pending_visible() {
+                "Enter resend  x discard  j/k select  y copy  Esc back"
+            } else {
+                "j/k select  y copy  Y +meta  v range  PgUp older  Esc back"
+            }
+        }
         (_, Focus::Input) => "Enter send  Alt-Enter newline  PgUp/PgDn scroll  Esc back",
     };
     let used: usize = left.iter().map(|s| s.content.width()).sum();
