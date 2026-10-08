@@ -145,7 +145,11 @@ prints only counts.
 Pasting uses bracketed paste, so multi-line text lands in the input box and
 isn't sent until you press Enter. Copying writes OSC 52 (works over SSH, and in
 tmux with `set-clipboard on`), and also uses `wl-copy`/`xclip` when available.
-The app doesn't capture the mouse, so your terminal's drag-select still works.
+
+Mouse: click a chat to open it, click a pane to focus it (a click in the
+messages pane also selects that message), and scroll with the wheel. Because
+the app captures the mouse, hold Shift to drag-select text with the terminal;
+or set `mouse = false` to leave the mouse to the terminal entirely.
 
 ## Send status
 

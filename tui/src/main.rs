@@ -11,7 +11,8 @@ use app::{App, Effect};
 use clap::Parser;
 use conn::{Conn, ConnEvent};
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind,
 };
 use ratatui::crossterm::execute;
 use std::path::PathBuf;
@@ -63,7 +64,13 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableBracketedPaste)?;
+    if cfg.mouse {
+        execute!(std::io::stdout(), EnableMouseCapture)?;
+    }
     let result = run(&mut terminal, &cfg);
+    if cfg.mouse {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -123,6 +130,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                     app.on_key(k, now)
                 }
                 AppEvent::Term(Event::Paste(s)) => app.on_paste(&s),
+                AppEvent::Term(Event::Mouse(m)) => app.on_mouse(m, now),
                 AppEvent::Term(_) => {}
                 AppEvent::Conn((generation, _)) if generation != conn.generation => {}
                 AppEvent::Conn((_, ConnEvent::Line(line))) => app.on_line(&line, now),

@@ -17,6 +17,8 @@ pub struct Config {
     pub country_code: String,
     pub notifications: bool,
     pub bell: bool,
+    /// Click chats and panes, scroll with the wheel. Hold Shift to drag-select text.
+    pub mouse: bool,
     /// Show Contacts names instead of handles.
     pub names: bool,
     /// Overrides for people the Mac's Contacts doesn't link; their chats are shown as one.
@@ -43,6 +45,7 @@ impl Default for Config {
             country_code: "1".into(),
             notifications: true,
             bell: false,
+            mouse: true,
             names: true,
             people: Vec::new(),
         }
@@ -65,6 +68,10 @@ country_code = "1"
 
 notifications = true
 bell = false
+
+# Click a chat to open it, click a pane to focus it, scroll with the wheel.
+# While this is on, hold Shift to select text with the terminal's own mouse.
+mouse = true
 
 # The bridge uses the Mac's Contacts to show one conversation per person, even
 # when chat.db has separate chats for their phone number and email. With names

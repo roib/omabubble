@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const LIST_WIDTH: u16 = 34;
@@ -51,10 +51,11 @@ fn border(focused: bool) -> Style {
 
 // ------------------------------------------------------------------ chat list
 
-fn draw_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered()
         .title(" Chats ")
         .border_style(border(app.focus == Focus::List));
+    app.rects.list = block.inner(area);
     let inner_w = area.width.saturating_sub(2) as usize;
     if app.chats.is_empty() {
         let msg = if app.status == Status::Connected {
@@ -109,8 +110,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::new().bg(Color::DarkGray));
-    let mut state = ListState::default().with_selected(Some(app.selected));
-    f.render_stateful_widget(list, area, &mut state);
+    app.list_state.select(Some(app.selected));
+    f.render_stateful_widget(list, area, &mut app.list_state);
 }
 
 // ------------------------------------------------------------------ messages
@@ -144,6 +145,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         block = block.title_top(Line::from(mode.black().on_cyan()).right_aligned());
     }
     let inner = block.inner(area);
+    app.rects.messages = inner;
     f.render_widget(block, area);
 
     if app.view.is_none() {
@@ -195,11 +197,15 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let end = (start + height).min(total);
     let mut visible: Vec<Line> = lines.drain(start..end).collect();
     // Short conversations sit at the bottom, like a chat.
-    if visible.len() < height {
-        let mut padded = vec![Line::from(""); height - visible.len()];
+    let pad = height.saturating_sub(visible.len());
+    if pad > 0 {
+        let mut padded = vec![Line::from(""); pad];
         padded.append(&mut visible);
         visible = padded;
     }
+    v.first_line = start;
+    v.pad = pad;
+    v.ranges = ranges;
     f.render_widget(Paragraph::new(visible), inner);
 }
 
@@ -472,7 +478,8 @@ fn handle_color(h: &str) -> Color {
 
 // ------------------------------------------------------------------ input, status, popup
 
-fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
+    app.rects.input = area;
     let focused = app.focus == Focus::Input && app.popup.is_none();
     let title = match app.view.as_ref().map(|v| &v.target) {
         Some(Target::Chat(_)) => format!(

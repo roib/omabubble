@@ -8,7 +8,11 @@ use proto::{
     Chat, Command, Event, Kind, Message, PROTOCOL_VERSION, PersonGroup, Request, Response,
     ServerMsg, parse_server_line,
 };
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
+use ratatui::widgets::ListState;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -92,6 +96,18 @@ pub struct View {
     /// Filled in by the renderer.
     pub total_lines: usize,
     pub height: usize,
+    /// Index of the first rendered line, blank rows above it, and each item's line range.
+    pub first_line: usize,
+    pub pad: usize,
+    pub ranges: Vec<(usize, usize)>,
+}
+
+/// Inner screen areas, filled in by the renderer for mouse hit-testing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Rects {
+    pub list: Rect,
+    pub messages: Rect,
+    pub input: Rect,
 }
 
 impl View {
@@ -108,6 +124,9 @@ impl View {
             appended: false,
             total_lines: 0,
             height: 0,
+            first_line: 0,
+            pad: 0,
+            ranges: Vec::new(),
         }
     }
 
@@ -179,6 +198,9 @@ pub struct App {
 
     pub effects: Vec<Effect>,
     pub quit: bool,
+    pub rects: Rects,
+    /// Owned here so the list's scroll offset is known for clicks.
+    pub list_state: ListState,
 }
 
 impl App {
@@ -220,6 +242,8 @@ impl App {
             unmatched: Vec::new(),
             effects: Vec::new(),
             quit: false,
+            rects: Rects::default(),
+            list_state: ListState::default(),
         }
     }
 
@@ -968,6 +992,56 @@ impl App {
     }
 
     // ---------------------------------------------------------------- input
+
+    pub fn on_mouse(&mut self, ev: MouseEvent, now: Instant) {
+        if self.popup.is_some() {
+            return;
+        }
+        let at = Position::new(ev.column, ev.row);
+        let r = self.rects;
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if r.list.contains(at) {
+                    // Two rows per chat.
+                    let idx = self.list_state.offset() + (ev.row - r.list.y) as usize / 2;
+                    if idx < self.chats.len() {
+                        self.selected = idx;
+                        self.open_selected(now);
+                    } else {
+                        self.focus = Focus::List;
+                    }
+                } else if r.messages.contains(at) && self.view.is_some() {
+                    self.set_focus(Focus::Messages);
+                    let row = (ev.row - r.messages.y) as usize;
+                    if let Some(v) = &mut self.view
+                        && row >= v.pad
+                    {
+                        let line = v.first_line + row - v.pad;
+                        if let Some(i) = v.ranges.iter().position(|(s, e)| (*s..*e).contains(&line))
+                        {
+                            v.sel = Some(i);
+                        }
+                    }
+                } else if r.input.contains(at) && self.view.is_some() {
+                    self.focus = Focus::Input;
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = ev.kind == MouseEventKind::ScrollUp;
+                if r.list.contains(at) {
+                    let n = self.chats.len();
+                    self.selected = if up {
+                        self.selected.saturating_sub(1)
+                    } else {
+                        (self.selected + 1).min(n.saturating_sub(1))
+                    };
+                } else if r.messages.contains(at) {
+                    self.scroll_by(if up { 3 } else { -3 });
+                }
+            }
+            _ => {}
+        }
+    }
 
     pub fn on_paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -2076,6 +2150,48 @@ mod tests {
         );
         assert!(app.pending.is_empty());
         assert!(app.flash.as_ref().unwrap().0.contains("[[person]]"));
+    }
+
+    #[test]
+    fn mouse_opens_chats_and_moves_focus() {
+        let (mut app, now) = connected();
+        app.rects = Rects {
+            list: Rect::new(1, 1, 32, 20),
+            messages: Rect::new(35, 1, 60, 20),
+            input: Rect::new(0, 22, 100, 3),
+        };
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.on_mouse(click(5, 3), now); // rows 3–4 are the second chat
+        assert_eq!(app.view.as_ref().unwrap().target, Target::Chat(2));
+        assert_eq!(app.focus, Focus::Input);
+        app.on_mouse(click(40, 5), now);
+        assert_eq!(app.focus, Focus::Messages);
+        app.on_mouse(click(10, 23), now);
+        assert_eq!(app.focus, Focus::Input);
+        app.on_mouse(click(5, 15), now); // below the last chat: focus only
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(app.view.as_ref().unwrap().target, Target::Chat(2));
+
+        let wheel = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.on_mouse(wheel(MouseEventKind::ScrollUp, 5, 2), now);
+        assert_eq!(app.selected, 0);
+        app.on_mouse(click(5, 1), now);
+        assert_eq!(app.view.as_ref().unwrap().target, Target::Chat(1));
+
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Char('n')), now);
+        app.on_mouse(click(5, 3), now);
+        assert!(app.popup.is_some(), "clicks are ignored under the popup");
     }
 
     #[test]
