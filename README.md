@@ -46,7 +46,9 @@ lose both permissions every time the binary changes.
    `imsg-bridge` may control Messages. Click Allow. If you miss the prompt,
    sends fail with `-1743`; turn it on under Privacy & Security → Automation.
 4. **Stay reachable:**
-   - Keep the Mac logged in, with Messages running.
+   - Keep the Mac logged in. Messages.app itself can stay closed: incoming
+     messages are written to chat.db by a background daemon, and a send
+     launches Messages through AppleScript when needed.
    - Turn on "Prevent automatic sleeping" (Energy settings) or run `caffeinate`.
    - For SMS (green bubble) contacts, turn on Text Message Forwarding to this Mac on the iPhone.
 5. **Restricted SSH key:** this key can only reach the bridge.
