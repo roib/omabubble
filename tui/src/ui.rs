@@ -580,7 +580,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let mut left = match &app.status {
         Status::Connected => vec![Span::styled(
             format!(" ● connected: {} ", app.host_label),
-            Style::new().green(),
+            Style::new().light_blue(),
         )],
         Status::Connecting => vec![Span::styled(
             format!(" ◌ connecting to {}… ", app.host_label),
@@ -601,7 +601,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if let Some((msg, _, _)) = &app.flash {
         left.push(Span::styled(
             format!(" ✓ {msg} "),
-            Style::new().black().on_green(),
+            Style::new().black().on_light_blue(),
         ));
     }
     let emoji_hint = match app.emoji.as_ref().map(|p| p.inline.is_some()) {
