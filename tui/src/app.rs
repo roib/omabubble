@@ -161,6 +161,7 @@ pub struct App {
     pub host_label: String,
     country_code: String,
     notifications: bool,
+    notification_body: bool,
     bell: bool,
     /// Config overrides plus the groups the bridge found in Contacts.
     people: Vec<Person>,
@@ -215,6 +216,7 @@ impl App {
             host_label,
             country_code: cfg.country_code.clone(),
             notifications: cfg.notifications,
+            notification_body: cfg.notification_body,
             bell: cfg.bell,
             people: cfg.people.clone(),
             config_people: cfg.people.clone(),
@@ -711,7 +713,11 @@ impl App {
                 };
                 self.effects.push(Effect::Notify {
                     title: format!("imsg: {title}"),
-                    body: preview(&m),
+                    body: if self.notification_body {
+                        preview(&m)
+                    } else {
+                        "New message".into()
+                    },
                 });
             }
             if self.bell {
@@ -1927,6 +1933,23 @@ mod tests {
         );
         assert!(app.effects.iter().any(
             |e| matches!(e, Effect::Notify { title, .. } if title == "imsg: Alex (Weekend Crew)")
+        ));
+    }
+
+    #[test]
+    fn notification_body_can_be_withheld() {
+        let (mut app, now) = connected_with(&Config {
+            notification_body: false,
+            ..cfg()
+        });
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 2, false, "secret"),
+            }),
+            now,
+        );
+        assert!(app.effects.iter().any(
+            |e| matches!(e, Effect::Notify { body, title } if body == "New message" && !title.contains("secret"))
         ));
     }
 

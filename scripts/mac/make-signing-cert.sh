@@ -3,8 +3,9 @@
 #
 # Signing every build with the same identity makes macOS treat rebuilds as the
 # same app, so Full Disk Access and Automation permissions survive updates.
-# The identity lives in its own keychain with a generated password, so it can
-# be unlocked over SSH without touching the login keychain.
+# The identity lives in its own keychain with an empty password: its only
+# protection is the 0600 file mode, which is also all a stored password would
+# give, and it keeps the password out of `ps` when scripts unlock it.
 set -eu
 
 NAME="imsg-bridge local signing"
@@ -19,8 +20,6 @@ fi
 mkdir -p "$DIR"
 chmod 700 "$DIR"
 umask 077
-openssl rand -hex 24 >"$DIR/keychain-password"
-PW=$(cat "$DIR/keychain-password")
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -40,14 +39,14 @@ CNF
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$TMP/cert.cnf" \
     -keyout "$TMP/key.pem" -out "$TMP/cert.pem" 2>/dev/null
 openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -name "$NAME" \
-    -out "$TMP/identity.p12" -passout pass:"$PW"
+    -out "$TMP/identity.p12" -passout pass:
 
-security create-keychain -p "$PW" "$KC"
+security create-keychain -p "" "$KC"
 security set-keychain-settings "$KC" # no auto-lock
-security unlock-keychain -p "$PW" "$KC"
-security import "$TMP/identity.p12" -k "$KC" -P "$PW" -T /usr/bin/codesign >/dev/null
+security unlock-keychain -p "" "$KC"
+security import "$TMP/identity.p12" -k "$KC" -P "" -T /usr/bin/codesign >/dev/null
 # Let codesign use the key without a GUI prompt.
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KC" >/dev/null
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KC" >/dev/null
 # codesign only finds private keys in keychains on the search list; append ours.
 eval "security list-keychains -d user -s $(security list-keychains -d user | tr '\n' ' ') \"$KC\""
 

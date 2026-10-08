@@ -26,22 +26,27 @@ mise exec -- cargo build --release -p tui          # → target/release/imsg
 # Mac, once: a self-signed code-signing identity (its own keychain, no prompts)
 ~/src/appl-tui/scripts/mac/make-signing-cert.sh
 
-# Mac, every update: build, sign, install to ~/.local/bin, restart the service
+# Mac, every update, in a terminal (asks for your password):
+# build, sign, install root-owned to /usr/local/bin, (re)load the service
 ~/src/appl-tui/scripts/mac/install-bridge.sh
 ```
 
 Signing every build with the same identity makes macOS treat rebuilds as the
 same app, so Full Disk Access and Automation survive updates. Unsigned builds
-lose both permissions every time the binary changes.
+lose both permissions every time the binary changes. The binary and the
+LaunchAgent plist are root-owned on purpose; see Security below.
 
 ## Mac setup (once)
 
-1. **Full Disk Access:** go to System Settings → Privacy & Security → Full
-   Disk Access, click **+**, and add `/Users/you/.local/bin/imsg-bridge`.
-   Press ⌘⇧. in the file picker to show hidden folders.
-2. **Start the service:** `~/.local/bin/imsg-bridge install`. This writes
-   `~/Library/LaunchAgents/com.imsg.bridge.plist` and loads it. Logs go to
+1. **Install the service:** run `scripts/mac/install-bridge.sh` in a
+   terminal on the Mac. It puts the binary at `/usr/local/bin/imsg-bridge`
+   and the agent at `/Library/LaunchAgents/com.imsg.bridge.plist`, both
+   root-owned, and loads the agent into your login session. Logs go to
    `~/Library/Logs/imsg-bridge.log`.
+2. **Full Disk Access:** go to System Settings → Privacy & Security → Full
+   Disk Access, click **+**, and add `/usr/local/bin/imsg-bridge`
+   (⌘⇧G in the file picker to type the path). The agent retries every 10s
+   and starts once this is granted.
 3. **Automation permission:** the first real send makes macOS ask whether
    `imsg-bridge` may control Messages. Click Allow. If you miss the prompt,
    sends fail with `-1743`; turn it on under Privacy & Security → Automation.
@@ -55,8 +60,9 @@ lose both permissions every time the binary changes.
    - On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/imsg -N ''`
    - On the Mac, add one line to `~/.ssh/authorized_keys`:
      ```
-     command="/Users/you/.local/bin/imsg-bridge connect",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 AAAA…(contents of ~/.ssh/imsg.pub)
+     restrict,command="/usr/local/bin/imsg-bridge connect" ssh-ed25519 AAAA…(contents of ~/.ssh/imsg.pub)
      ```
+     `restrict` turns off pty, port/agent/X11 forwarding and `~/.ssh/rc`.
    - On Linux, add to `~/.ssh/config`:
      ```
      Host mac-imsg
@@ -70,14 +76,14 @@ lose both permissions every time the binary changes.
    For use away from home, use Tailscale and the Mac's Tailscale name rather
    than forwarding port 22 on your router.
 
-To remove the service, run `imsg-bridge uninstall`.
+To remove the service, run `sudo imsg-bridge uninstall`.
 
 **Re-granting permissions:** this is only needed if the binary's identity
 changes, for example after switching from unsigned to signed or recreating the
 certificate. Remove `imsg-bridge` from the Full Disk Access list and add it
 again, then allow the Automation prompt on the next send. Over VNC, this opens
 both windows for you:
-`open -R ~/.local/bin/imsg-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
+`open -R /usr/local/bin/imsg-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
 
 ## Linux setup
 
@@ -87,9 +93,10 @@ both windows for you:
 host = "mac-imsg"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
 notifications = true    # notify-send for messages in chats you don't have open
+notification_body = true  # false: notify with the sender only (see Security)
 bell = false
 # ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
-# remote_command = "/Users/you/.local/bin/imsg-bridge connect"  # only for keys without a forced command
+# remote_command = "/usr/local/bin/imsg-bridge connect"       # only for keys without a forced command
 ```
 
 Then run `imsg`, or `imsg <host>` to override the configured host.
@@ -170,6 +177,41 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
   aren't supported.
 - New messages only arrive while the Mac is awake and online. After a
   reconnect, the TUI catches up on everything it missed.
+
+## Security
+
+What the design protects against, and what it doesn't.
+
+- **Network:** the only inbound port is SSH, key-only, and the imsg key is
+  `restrict`ed to the forced command `imsg-bridge connect`: no shell, no pty,
+  no forwarding. The bridge's socket is local-only, 0600 in a 0700 directory.
+  Use Tailscale for remote access rather than exposing SSH.
+- **The Linux box is fully trusted.** Whoever holds `~/.ssh/imsg` can read
+  every message, see which handles Contacts groups together (and names, if
+  `names = true`), and send as you. The key has no passphrase for
+  convenience; treat the file accordingly.
+- **Same-user processes on the Mac can use the bridge.** Full Disk Access
+  belongs to `imsg-bridge`, and the bridge serves whatever connects to its
+  socket. Other *users* are kept out by the socket permissions, but anything
+  already running as you, with no Full Disk Access of its own, can connect,
+  read all your messages and send through it. That is inherent to this
+  design (a BlueBubbles server has the same property, over the network).
+  Don't run the bridge on a Mac where you run software you don't trust.
+- **Root-owned binary and plist.** Because the signing key lives in a
+  keychain on the same account, code running as you could re-sign its own
+  binary as `com.imsg.bridge`. It can't swap it into `/usr/local/bin` or
+  `/Library/LaunchAgents` without your password, which is why those are
+  root-owned. Keep SIP enabled; nothing here needs it off.
+- **Logs** never contain message text or recipients: send failures are
+  logged with phone numbers and emails redacted, and `--dry-run-send` is the
+  only mode that logs a message's argv.
+- **Notifications** carry message previews, and desktops (Omarchy included)
+  keep a notification history on disk. Set `notification_body = false` to
+  notify with the sender only.
+- **Input handling:** recipients and message text reach `osascript` as
+  argv, never spliced into the script; all SQL is parameterised except
+  integer chat ids; request lines over 1 MiB are rejected.
+- Dependencies are checked with `cargo audit`.
 
 ## Development
 

@@ -1,6 +1,8 @@
 #!/bin/sh
-# Build, sign and install imsg-bridge, then restart the service if it's loaded.
-# Run on the Mac from anywhere in the repo checkout.
+# Build, sign and install imsg-bridge, then (re)load the service.
+# Run on the Mac, in a terminal: the install step asks for your password,
+# because the binary and the LaunchAgent plist are root-owned so that code
+# running as you can't swap in a replacement and inherit Full Disk Access.
 set -eu
 cd "$(dirname "$0")/../.."
 
@@ -8,14 +10,20 @@ NAME="imsg-bridge local signing"
 DIR="$HOME/.config/imsg-signing"
 KC="$DIR/signing.keychain-db"
 MISE=${MISE:-/opt/local/bin/mise}
-DEST="$HOME/.local/bin/imsg-bridge"
-LABEL="gui/$(id -u)/com.imsg.bridge"
+DEST=/usr/local/bin/imsg-bridge
 
 "$MISE" exec -- cargo build --release -p bridge
 BIN=target/release/imsg-bridge
 
 if [ -f "$KC" ]; then
-    security unlock-keychain -p "$(cat "$DIR/keychain-password")" "$KC"
+    # Older setups stored a random keychain password in a file, which then
+    # showed up in `ps` on every unlock. Switch the keychain to an empty
+    # password once; the 0600 file mode is the protection either way.
+    if [ -f "$DIR/keychain-password" ]; then
+        security set-keychain-password -o "$(cat "$DIR/keychain-password")" -p "" "$KC"
+        rm -f "$DIR/keychain-password"
+    fi
+    security unlock-keychain -p "" "$KC"
     if ! security list-keychains -d user | grep -qF "$KC"; then
         eval "security list-keychains -d user -s $(security list-keychains -d user | tr '\n' ' ') \"$KC\""
     fi
@@ -27,15 +35,16 @@ else
     echo "         Unsigned builds lose Full Disk Access on every update." >&2
 fi
 
-# Replace atomically: never overwrite the binary launchd is running.
-mkdir -p "$(dirname "$DEST")"
-cp "$BIN" "$DEST.new"
-mv -f "$DEST.new" "$DEST"
+# Root-owned binary; `install` replaces the file rather than writing into
+# the one launchd is running.
+sudo install -d -o root -g wheel -m 0755 "$(dirname "$DEST")"
+sudo install -o root -g wheel -m 0755 "$BIN" "$DEST"
+sudo "$DEST" install
 echo "installed $DEST ($("$DEST" --version))"
 
-if launchctl print "$LABEL" >/dev/null 2>&1; then
-    launchctl kickstart -k "$LABEL"
-    echo "restarted com.imsg.bridge"
-else
-    echo "service not loaded; run: $DEST install"
+OLD="$HOME/.local/bin/imsg-bridge"
+if [ -f "$OLD" ]; then
+    rm -f "$OLD"
+    echo "removed old user-owned copy $OLD"
+    echo "Update ~/.ssh/authorized_keys to: restrict,command=\"$DEST connect\" …"
 fi

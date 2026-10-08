@@ -3,6 +3,7 @@
 //! Values travel as argv to `on run argv`, so message text never needs escaping.
 
 use crate::log;
+use crate::redact::redact;
 use anyhow::{Result, bail};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -71,7 +72,10 @@ impl Sender {
                 match self.osascript(TO_HANDLE, &[handle, text, "iMessage"]) {
                     Ok(svc) => Ok(svc.unwrap_or_else(|| "iMessage".into())),
                     Err(e) => {
-                        log!("iMessage send failed ({e}); retrying as SMS");
+                        log!(
+                            "iMessage send failed ({}); retrying as SMS",
+                            redact(&e.to_string())
+                        );
                         let svc = self.osascript(TO_HANDLE, &[handle, text, "SMS"])?;
                         Ok(svc.unwrap_or_else(|| "SMS".into()))
                     }

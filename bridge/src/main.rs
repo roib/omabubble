@@ -1,6 +1,7 @@
 mod contacts;
 mod db;
 mod launchd;
+mod redact;
 mod relay;
 mod send;
 mod server;

@@ -3,11 +3,12 @@
 use crate::contacts;
 use crate::db::Db;
 use crate::log;
+use crate::redact::redact;
 use crate::send::{Sender, Target};
 use crate::watch;
 use anyhow::{Context, Result, bail};
 use proto::{Command, Event, PROTOCOL_VERSION, Request, Response};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,8 @@ use std::sync::mpsc::{Sender as Tx, channel};
 use std::sync::{Arc, Mutex};
 
 const MAX_LIMIT: u32 = 500;
+/// A request line longer than this is rejected rather than buffered.
+const MAX_LINE: u64 = 1 << 20;
 const SINCE_LIMIT: u32 = 1000;
 
 /// Connected clients, each fed through its own writer thread.
@@ -169,8 +172,20 @@ fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
     };
     let client_id = hub.add(tx.clone());
 
-    for line in BufReader::new(&stream).lines() {
-        let Ok(line) = line else { break };
+    let mut reader = BufReader::new(&stream);
+    loop {
+        let mut line = String::new();
+        let n = match reader.by_ref().take(MAX_LINE).read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n as u64,
+        };
+        if n >= MAX_LINE && !line.ends_with('\n') {
+            let _ = tx.send(serde_json::to_string(&Response::error(
+                0,
+                "request too long",
+            ))?);
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -236,7 +251,7 @@ fn dispatch(db: &Db, shared: &Shared, req: Request) -> Response {
             text,
         } => send(db, sender, to.as_deref(), chat_guid.as_deref(), &text)
             // Log the error only: never message text or recipients.
-            .inspect_err(|e| log!("send failed: {e:#}"))
+            .inspect_err(|e| log!("send failed: {}", redact(&format!("{e:#}"))))
             .map(|service| Response {
                 id,
                 ok: Some(true),
@@ -384,5 +399,12 @@ mod tests {
             panic!()
         };
         assert!(r.error.unwrap().starts_with("bad request"));
+
+        // An endless line is cut off, not buffered.
+        w.write_all(&vec![b'x'; (MAX_LINE + 10) as usize]).unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        assert_eq!(r.error.as_deref(), Some("request too long"));
     }
 }

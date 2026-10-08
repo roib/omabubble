@@ -1,21 +1,57 @@
-//! `imsg-bridge install` / `uninstall`: manage the per-user LaunchAgent.
+//! `imsg-bridge install` / `uninstall`: manage the LaunchAgent.
+//!
+//! The binary and the plist are root-owned (`/usr/local/bin`,
+//! `/Library/LaunchAgents`) so that code running as the user can't replace
+//! the program that holds Full Disk Access. The agent itself still runs in
+//! the user's login session, which AppleScript needs.
 
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::ffi::CStr;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LABEL: &str = "com.imsg.bridge";
+const SYSTEM_PLIST: &str = "/Library/LaunchAgents/com.imsg.bridge.plist";
 
-fn plist_path() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .context("no home directory")?
-        .join("Library/LaunchAgents")
-        .join(format!("{LABEL}.plist")))
+/// The user the agent runs for: the account behind `sudo`.
+struct Target {
+    uid: u32,
+    home: PathBuf,
 }
 
-fn domain() -> String {
+fn target_user() -> Result<Target> {
     // SAFETY: getuid has no preconditions and cannot fail.
-    format!("gui/{}", unsafe { libc::getuid() })
+    if unsafe { libc::getuid() } != 0 {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "imsg-bridge".into());
+        bail!(
+            "needs root so the binary and plist can't be replaced by user-level code: run `sudo {exe} install`"
+        );
+    }
+    let uid: u32 = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|u| u.parse().ok())
+        .filter(|u| *u != 0)
+        .context("run through `sudo` from your own account, not as root directly")?;
+    // SAFETY: getpwuid returns a pointer to static storage or null; it's read
+    // immediately and not retained.
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        bail!("no account with uid {uid}");
+    }
+    let home = unsafe { CStr::from_ptr((*pw).pw_dir) }
+        .to_string_lossy()
+        .into_owned();
+    Ok(Target {
+        uid,
+        home: PathBuf::from(home),
+    })
+}
+
+fn domain(uid: u32) -> String {
+    format!("gui/{uid}")
 }
 
 fn xml_escape(s: &str) -> String {
@@ -54,34 +90,66 @@ pub fn plist(exe: &str, log: &str) -> String {
     )
 }
 
+fn bootout(uid: u32) {
+    let _ = Command::new("launchctl")
+        .args(["bootout", &format!("{}/{LABEL}", domain(uid))])
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// An earlier version installed a user-owned agent; unload and remove it.
+fn remove_legacy_user_agent(t: &Target) {
+    let legacy = t
+        .home
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist"));
+    if legacy.exists() {
+        bootout(t.uid);
+        if std::fs::remove_file(&legacy).is_ok() {
+            println!("Removed old user agent {}", legacy.display());
+        }
+    }
+}
+
 pub fn install() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("install only works on macOS");
     }
+    let t = target_user()?;
     // launchd does not expand `~`, so write absolute paths.
     let exe = std::env::current_exe()?.canonicalize()?;
-    let home = dirs::home_dir().context("no home directory")?;
-    let log = home.join("Library/Logs/imsg-bridge.log");
-    let path = plist_path()?;
+    if std::fs::metadata(&exe)?.uid() != 0 {
+        bail!(
+            "{} is not owned by root; install it with `sudo install -o root -g wheel -m 0755 … /usr/local/bin/imsg-bridge` first",
+            exe.display()
+        );
+    }
+    let log = t.home.join("Library/Logs/imsg-bridge.log");
+
+    remove_legacy_user_agent(&t);
+    let path = Path::new(SYSTEM_PLIST);
     std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, plist(&exe.to_string_lossy(), &log.to_string_lossy()))?;
+    std::fs::write(path, plist(&exe.to_string_lossy(), &log.to_string_lossy()))?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
 
     // Reinstall cleanly if it was already loaded (fails harmlessly on first install).
-    let _ = Command::new("launchctl")
-        .args(["bootout", &format!("{}/{LABEL}", domain())])
-        .stderr(std::process::Stdio::null())
-        .status();
+    bootout(t.uid);
     let status = Command::new("launchctl")
-        .args(["bootstrap", &domain()])
-        .arg(&path)
+        .args(["bootstrap", &domain(t.uid)])
+        .arg(path)
         .status()?;
     if !status.success() {
         bail!("launchctl bootstrap failed ({status})");
     }
-    println!("Installed {} → {}", path.display(), exe.display());
+    println!(
+        "Installed {} → {} (runs as uid {})",
+        path.display(),
+        exe.display(),
+        t.uid
+    );
     println!("Logs: {}", log.display());
     println!(
-        "Next: grant Full Disk Access to {} in System Settings → Privacy & Security.",
+        "If this is a new path, grant Full Disk Access to {} in System Settings → Privacy & Security.",
         exe.display()
     );
     Ok(())
@@ -91,12 +159,12 @@ pub fn uninstall() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("uninstall only works on macOS");
     }
-    let _ = Command::new("launchctl")
-        .args(["bootout", &format!("{}/{LABEL}", domain())])
-        .status();
-    let path = plist_path()?;
+    let t = target_user()?;
+    bootout(t.uid);
+    remove_legacy_user_agent(&t);
+    let path = Path::new(SYSTEM_PLIST);
     if path.exists() {
-        std::fs::remove_file(&path)?;
+        std::fs::remove_file(path)?;
     }
     println!("Removed {LABEL}");
     Ok(())
@@ -107,11 +175,11 @@ mod tests {
     #[test]
     fn plist_has_absolute_args() {
         let p = super::plist(
-            "/Users/you/.local/bin/imsg-bridge",
+            "/usr/local/bin/imsg-bridge",
             "/Users/you/Library/Logs/imsg-bridge.log",
         );
         assert!(p.contains(
-            "<string>/Users/you/.local/bin/imsg-bridge</string>\n        <string>serve</string>"
+            "<string>/usr/local/bin/imsg-bridge</string>\n        <string>serve</string>"
         ));
         assert!(!p.contains('~'));
     }
