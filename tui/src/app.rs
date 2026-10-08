@@ -161,7 +161,7 @@ pub struct App {
     pub host_label: String,
     country_code: String,
     notifications: bool,
-    notification_body: bool,
+    notification_detail: bool,
     bell: bool,
     /// Config overrides plus the groups the bridge found in Contacts.
     people: Vec<Person>,
@@ -216,7 +216,7 @@ impl App {
             host_label,
             country_code: cfg.country_code.clone(),
             notifications: cfg.notifications,
-            notification_body: cfg.notification_body,
+            notification_detail: cfg.notification_detail,
             bell: cfg.bell,
             people: cfg.people.clone(),
             config_people: cfg.people.clone(),
@@ -711,14 +711,12 @@ impl App {
                     Some(d) => d,
                     None => sender,
                 };
-                self.effects.push(Effect::Notify {
-                    title: format!("imsg: {title}"),
-                    body: if self.notification_body {
-                        preview(&m)
-                    } else {
-                        "New message".into()
-                    },
-                });
+                let (title, body) = if self.notification_detail {
+                    (format!("imsg: {title}"), preview(&m))
+                } else {
+                    ("imsg".to_string(), "New message".to_string())
+                };
+                self.effects.push(Effect::Notify { title, body });
             }
             if self.bell {
                 self.effects.push(Effect::Bell);
@@ -1937,9 +1935,9 @@ mod tests {
     }
 
     #[test]
-    fn notification_body_can_be_withheld() {
+    fn notification_detail_can_be_withheld() {
         let (mut app, now) = connected_with(&Config {
-            notification_body: false,
+            notification_detail: false,
             ..cfg()
         });
         app.on_line(
@@ -1949,7 +1947,7 @@ mod tests {
             now,
         );
         assert!(app.effects.iter().any(
-            |e| matches!(e, Effect::Notify { body, title } if body == "New message" && !title.contains("secret"))
+            |e| matches!(e, Effect::Notify { body, title } if body == "New message" && title == "imsg")
         ));
     }
 

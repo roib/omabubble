@@ -16,8 +16,8 @@ pub struct Config {
     /// Prepended to 10-digit numbers.
     pub country_code: String,
     pub notifications: bool,
-    /// Include the message text in notifications. Off, they say only who wrote.
-    pub notification_body: bool,
+    /// Show who wrote and a preview in notifications. Off, they say only "New message".
+    pub notification_detail: bool,
     pub bell: bool,
     /// Click chats and panes, scroll with the wheel. Hold Shift to drag-select text.
     pub mouse: bool,
@@ -46,7 +46,7 @@ impl Default for Config {
             command: None,
             country_code: "1".into(),
             notifications: true,
-            notification_body: true,
+            notification_detail: true,
             bell: false,
             mouse: true,
             names: true,
@@ -70,9 +70,9 @@ host = "mac-imsg"
 country_code = "1"
 
 notifications = true
-# Omarchy (and most desktops) keep a notification history on disk; set this to
-# false to notify with the sender only and keep message text out of it.
-notification_body = true
+# Desktops keep a notification history on disk. With this off, notifications
+# say only "New message": no sender, no preview.
+notification_detail = true
 bell = false
 
 # Click a chat to open it, click a pane to focus it, scroll with the wheel.

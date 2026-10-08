@@ -93,7 +93,7 @@ both windows for you:
 host = "mac-imsg"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
 notifications = true    # notify-send for messages in chats you don't have open
-notification_body = true  # false: notify with the sender only (see Security)
+notification_detail = true  # false: notifications say only "New message" (see Security)
 bell = false
 # ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
 # remote_command = "/usr/local/bin/imsg-bridge connect"       # only for keys without a forced command
@@ -205,9 +205,9 @@ What the design protects against, and what it doesn't.
 - **Logs** never contain message text or recipients: send failures are
   logged with phone numbers and emails redacted, and `--dry-run-send` is the
   only mode that logs a message's argv.
-- **Notifications** carry message previews, and desktops (Omarchy included)
-  keep a notification history on disk. Set `notification_body = false` to
-  notify with the sender only.
+- **Notifications** carry the sender and a preview, and desktops (Omarchy
+  included) keep a notification history on disk. Set
+  `notification_detail = false` to notify with just "New message".
 - **Input handling:** recipients and message text reach `osascript` as
   argv, never spliced into the script; all SQL is parameterised except
   integer chat ids; request lines over 1 MiB are rejected.
