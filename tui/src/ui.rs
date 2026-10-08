@@ -42,6 +42,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.popup.is_some() {
         draw_popup(f, app);
     }
+    match app.emoji.as_ref().map(|p| p.inline.is_some()) {
+        Some(true) => draw_emoji_inline(f, app, input_area),
+        Some(false) => draw_emoji_picker(f, app),
+        None => {}
+    }
 }
 
 fn border(focused: bool) -> Style {
@@ -511,7 +516,8 @@ fn handle_color(h: &str) -> Color {
 
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     app.rects.input = area;
-    let focused = app.focus == Focus::Input && app.popup.is_none();
+    let picker_open = app.emoji.as_ref().is_some_and(|p| p.inline.is_none());
+    let focused = app.focus == Focus::Input && app.popup.is_none() && !picker_open;
     let title = match app.view.as_ref().map(|v| &v.target) {
         Some(Target::Chat(_)) => format!(
             " Message → {} ",
@@ -598,7 +604,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::new().black().on_green(),
         ));
     }
+    let emoji_hint = match app.emoji.as_ref().map(|p| p.inline.is_some()) {
+        Some(true) => Some("Tab/↑↓ choose  Enter insert  Esc close"),
+        Some(false) => Some("type to search  ↑↓ choose  Enter insert  Esc close"),
+        None => None,
+    };
     let hints = match (app.popup.is_some(), app.focus) {
+        _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
         (_, Focus::List) => "j/k move  Enter open  n new  Tab focus  q quit",
         (_, Focus::Messages) => {
@@ -675,6 +687,91 @@ fn draw_popup(f: &mut Frame, app: &App) {
         (1, msg.width())
     };
     f.set_cursor_position((inner.x + 9 + col as u16, inner.y + row));
+}
+
+// ------------------------------------------------------------------ emoji
+
+fn emoji_rows(app: &App, with_names: bool) -> Vec<Line<'static>> {
+    let sel = app.emoji.as_ref().map_or(0, |p| p.sel);
+    let query = app.emoji.as_ref().map_or("", |p| p.query.as_str());
+    app.emoji_hits()
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let label = if with_names {
+                e.name().to_string()
+            } else {
+                crate::emoji::label(e, query)
+            };
+            let line = Line::from(vec![
+                Span::raw(if i == sel { " ▶ " } else { "   " }),
+                Span::raw(e.as_str().to_string()),
+                Span::raw("  "),
+                Span::styled(label, Style::new().dark_gray()),
+            ]);
+            if i == sel {
+                line.patch_style(Style::new().bg(Color::DarkGray))
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// Small list just above the input, under the text being completed.
+fn draw_emoji_inline(f: &mut Frame, app: &App, input_area: Rect) {
+    let rows = emoji_rows(app, false);
+    if rows.is_empty() {
+        return;
+    }
+    let w = 34.min(f.area().width);
+    let h = (rows.len() as u16 + 2).min(input_area.y);
+    let inner_w = input_area.width.saturating_sub(2).max(1) as usize;
+    let start = app.emoji.as_ref().and_then(|p| p.inline).unwrap_or(0);
+    let (_, (_, col)) = input_layout(&app.input, start, inner_w);
+    let x = (input_area.x + 1 + col as u16).min(f.area().width.saturating_sub(w));
+    let rect = Rect {
+        x,
+        y: input_area.y.saturating_sub(h),
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::bordered().border_style(Style::new().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(rows).block(block), rect);
+}
+
+fn draw_emoji_picker(f: &mut Frame, app: &App) {
+    let Some(p) = &app.emoji else { return };
+    let area = f.area();
+    let recent = p.query.is_empty() && !app.recents.is_empty();
+    let mut lines = vec![
+        Line::from(vec!["Search: ".cyan().bold(), Span::raw(p.query.clone())]),
+        Line::from(""),
+    ];
+    if recent {
+        lines.push(Line::from("Recent".dark_gray()));
+    }
+    let rows = emoji_rows(app, true);
+    if rows.is_empty() {
+        lines.push(Line::from("  no matches".dark_gray()));
+    }
+    lines.extend(rows);
+    let w = 48.min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(" Emoji ")
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+    f.set_cursor_position((inner.x + 8 + p.query.width() as u16, inner.y));
 }
 
 // ------------------------------------------------------------------ helpers

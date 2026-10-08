@@ -2,6 +2,7 @@ mod app;
 mod clipboard;
 mod config;
 mod conn;
+mod emoji;
 mod notify;
 mod phone;
 mod ui;
@@ -102,6 +103,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     }
 
     let mut app = App::new(cfg);
+    app.recents = load_recents();
     let mut conn = Conn::default();
     let start = |conn: &mut Conn, app: &mut App| {
         app.on_connecting();
@@ -150,6 +152,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 Effect::Copy(text) => clipboard::copy(&text),
                 Effect::Reconnect => start(&mut conn, &mut app),
                 Effect::Disconnect => conn.stop(),
+                Effect::SaveRecents(recents) => save_recents(&recents),
             }
         }
         if app.quit {
@@ -158,4 +161,29 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     }
     conn.stop();
     Ok(())
+}
+
+fn recents_path() -> Option<PathBuf> {
+    dirs::state_dir().map(|d| d.join("imsg/recent_emoji"))
+}
+
+fn load_recents() -> Vec<String> {
+    recents_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_recents(recents: &[String]) {
+    if let Some(path) = recents_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, recents.join("\n"));
+    }
 }

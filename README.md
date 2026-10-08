@@ -142,6 +142,8 @@ prints only counts.
 | Input | `Enter` | Send |
 | | `Alt-Enter` | Newline |
 | | `Ctrl-W` / `Ctrl-U` | Delete word / clear |
+| | `:` + two letters | Emoji completion (`:thu` → 👍); Tab/↑↓ choose, Enter insert, Esc close. A full `:fire:` converts when you type a space |
+| | `Ctrl-E` | Emoji picker: recently used first, type to search by shortcode or name |
 | | `Esc` | Back to the list |
 | Messages pane | `j`/`k` | Select a message |
 | | `y` | Copy the selected message |

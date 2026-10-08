@@ -2,6 +2,7 @@
 //! are queued in `effects` and carried out by the main loop.
 
 use crate::config::{Config, Person};
+use crate::emoji;
 use crate::phone;
 use chrono::{Local, TimeZone};
 use proto::{
@@ -33,11 +34,16 @@ const UNMATCHED_KEEP: usize = 20;
 #[derive(Debug)]
 pub enum Effect {
     Request(Request),
-    Notify { title: String, body: String },
+    Notify {
+        title: String,
+        body: String,
+    },
     Bell,
     Copy(String),
     Reconnect,
     Disconnect,
+    /// Persist recently used emojis.
+    SaveRecents(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +152,17 @@ pub enum Item<'a> {
     Pending(&'a Pending),
 }
 
+/// Emoji completion: inline (after `:` in the input) or the Ctrl+E picker.
+#[derive(Debug, Default)]
+pub struct EmojiPopup {
+    pub query: String,
+    pub sel: usize,
+    /// Byte offset of the `:` being completed; `None` for the picker.
+    pub inline: Option<usize>,
+}
+
+const RECENTS_MAX: usize = 16;
+
 #[derive(Debug, Default)]
 pub struct Popup {
     pub to: String,
@@ -186,6 +203,11 @@ pub struct App {
     /// Byte offset into `input`.
     pub cursor: usize,
     pub popup: Option<Popup>,
+    pub emoji: Option<EmojiPopup>,
+    /// Inline completion dismissed with Esc for the `:` at this offset.
+    emoji_dismissed: Option<usize>,
+    /// Most recently used first.
+    pub recents: Vec<String>,
 
     pub status: Status,
     backoff: Duration,
@@ -236,6 +258,9 @@ impl App {
             input: String::new(),
             cursor: 0,
             popup: None,
+            emoji: None,
+            emoji_dismissed: None,
+            recents: Vec::new(),
             status: Status::Connecting,
             backoff: FIRST_BACKOFF,
             last_bridge_error: None,
@@ -1128,6 +1153,14 @@ impl App {
         if self.popup.is_some() {
             return self.popup_key(key, now);
         }
+        if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
+            self.focus = Focus::Input;
+            self.emoji = Some(EmojiPopup::default());
+            return;
+        }
+        if self.emoji.is_some() && self.emoji_key(key) {
+            return;
+        }
         match key.code {
             KeyCode::Tab => return self.cycle_focus(true),
             KeyCode::BackTab => return self.cycle_focus(false),
@@ -1138,8 +1171,111 @@ impl App {
         match self.focus {
             Focus::List => self.list_key(key, now),
             Focus::Messages => self.messages_key(key, now),
-            Focus::Input => self.input_key(key, now),
+            Focus::Input => {
+                self.input_key(key, now);
+                self.update_inline_emoji();
+            }
         }
+    }
+
+    // ---------------------------------------------------------------- emoji
+
+    /// Candidates for the open popup.
+    pub fn emoji_hits(&self) -> Vec<&'static emojis::Emoji> {
+        let Some(p) = &self.emoji else {
+            return Vec::new();
+        };
+        match p.inline {
+            Some(_) => emoji::search(&p.query, &self.recents, 6),
+            None if p.query.is_empty() && !self.recents.is_empty() => self
+                .recents
+                .iter()
+                .filter_map(|e| emojis::get(e))
+                .take(8)
+                .collect(),
+            None => emoji::search(&p.query, &self.recents, 8),
+        }
+    }
+
+    /// Opens, updates or closes inline completion after the input changed.
+    fn update_inline_emoji(&mut self) {
+        if self.emoji.as_ref().is_some_and(|p| p.inline.is_none()) {
+            return;
+        }
+        match emoji::token_at(&self.input, self.cursor) {
+            Some((start, _)) if self.emoji_dismissed == Some(start) => self.emoji = None,
+            Some((start, query)) => {
+                let sel = match &self.emoji {
+                    Some(p) if p.inline == Some(start) && p.query == query => p.sel,
+                    _ => 0,
+                };
+                let query = query.to_string();
+                self.emoji = Some(EmojiPopup {
+                    query,
+                    sel,
+                    inline: Some(start),
+                });
+                if self.emoji_hits().is_empty() {
+                    self.emoji = None;
+                }
+            }
+            None => {
+                self.emoji = None;
+                self.emoji_dismissed = None;
+            }
+        }
+    }
+
+    /// Handles a key while a popup is open; false lets it reach the input.
+    fn emoji_key(&mut self, key: KeyEvent) -> bool {
+        let hits = self.emoji_hits();
+        let n = hits.len();
+        let Some(p) = &mut self.emoji else {
+            return false;
+        };
+        let picker = p.inline.is_none();
+        match key.code {
+            KeyCode::Esc => {
+                self.emoji_dismissed = p.inline;
+                self.emoji = None;
+            }
+            KeyCode::Down | KeyCode::Tab if n > 0 => p.sel = (p.sel + 1) % n,
+            KeyCode::Up | KeyCode::BackTab if n > 0 => p.sel = (p.sel + n - 1) % n,
+            KeyCode::Enter if n > 0 => {
+                let e = hits[p.sel.min(n - 1)].as_str();
+                self.insert_emoji(e);
+            }
+            KeyCode::Backspace if picker => {
+                p.query.pop();
+                p.sel = 0;
+            }
+            KeyCode::Char(c) if picker && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                p.query.push(c);
+                p.sel = 0;
+            }
+            _ => return picker,
+        }
+        true
+    }
+
+    fn insert_emoji(&mut self, e: &str) {
+        if let Some(start) = self.emoji.as_ref().and_then(|p| p.inline) {
+            self.input.replace_range(start..self.cursor, e);
+            self.cursor = start + e.len();
+        } else {
+            self.input.insert_str(self.cursor, e);
+            self.cursor += e.len();
+        }
+        self.emoji = None;
+        self.emoji_dismissed = None;
+        self.remember_emoji(e);
+    }
+
+    fn remember_emoji(&mut self, e: &str) {
+        self.recents.retain(|r| r != e);
+        self.recents.insert(0, e.to_string());
+        self.recents.truncate(RECENTS_MAX);
+        self.effects.push(Effect::SaveRecents(self.recents.clone()));
     }
 
     fn cycle_focus(&mut self, forward: bool) {
@@ -1290,6 +1426,15 @@ impl App {
                 let start = trimmed.rfind(char::is_whitespace).map_or(0, |i| i + 1);
                 self.input.replace_range(start..self.cursor, "");
                 self.cursor = start;
+            }
+            // A finished :code: turns into its emoji when a space follows.
+            KeyCode::Char(' ') if !ctrl => {
+                if let Some((start, e)) = emoji::code_before(&self.input, self.cursor) {
+                    self.input.replace_range(start..self.cursor, e);
+                    self.cursor = start + e.len();
+                    self.remember_emoji(e);
+                }
+                self.insert_char(' ');
             }
             // Alt+letter is usually a fast Esc+letter, not text.
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
@@ -2126,6 +2271,84 @@ mod tests {
         app.on_key(key(KeyCode::Char('x')), now);
         assert!(app.pending.is_empty());
         let _ = id;
+    }
+
+    fn type_str(app: &mut App, s: &str, now: Instant) {
+        for c in s.chars() {
+            app.on_key(key(KeyCode::Char(c)), now);
+        }
+    }
+
+    #[test]
+    fn inline_emoji_completion() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now);
+        type_str(&mut app, "hi :th", now);
+        assert!(app.emoji.as_ref().is_some_and(|p| p.inline == Some(3)));
+        type_str(&mut app, "u", now);
+        assert_eq!(app.emoji_hits()[0].as_str(), "👍");
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.input, "hi 👍");
+        assert!(app.emoji.is_none());
+        assert!(
+            app.pending.is_empty(),
+            "Enter picked the emoji, it didn't send"
+        );
+        assert_eq!(app.recents, vec!["👍"]);
+        assert!(matches!(app.effects.last(), Some(Effect::SaveRecents(r)) if r == &["👍"]));
+
+        // Esc dismisses for this token; typing on doesn't reopen it.
+        type_str(&mut app, " :fir", now);
+        app.on_key(key(KeyCode::Esc), now);
+        assert!(app.emoji.is_none());
+        assert_eq!(
+            app.focus,
+            Focus::Input,
+            "Esc closed the popup, not the input"
+        );
+        type_str(&mut app, "e", now);
+        assert!(app.emoji.is_none());
+
+        // A finished code converts on space.
+        type_str(&mut app, ": ", now);
+        assert_eq!(app.input, "hi 👍 🔥 ");
+        assert_eq!(app.recents[0], "🔥");
+
+        // Times don't trigger anything.
+        type_str(&mut app, "at 10:30", now);
+        assert!(app.emoji.is_none());
+    }
+
+    #[test]
+    fn emoji_picker() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now);
+        type_str(&mut app, "yay ", now);
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            now,
+        );
+        assert!(app.emoji.as_ref().is_some_and(|p| p.inline.is_none()));
+        type_str(&mut app, "party popper", now);
+        let pos = app
+            .emoji_hits()
+            .iter()
+            .position(|e| e.as_str() == "🎉")
+            .unwrap();
+        for _ in 0..pos {
+            app.on_key(key(KeyCode::Down), now);
+        }
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.input, "yay 🎉");
+
+        // Empty search shows recents first.
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            now,
+        );
+        assert_eq!(app.emoji_hits()[0].as_str(), "🎉");
+        app.on_key(key(KeyCode::Esc), now);
+        assert!(app.emoji.is_none());
     }
 
     #[test]
