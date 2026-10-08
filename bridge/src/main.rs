@@ -1,6 +1,7 @@
 mod contacts;
 mod db;
 mod launchd;
+mod marks;
 mod redact;
 mod relay;
 mod send;
@@ -133,7 +134,9 @@ fn main() -> Result<()> {
                         groups.len()
                     )
                 }
-                Query::Chats { limit } => serde_json::to_string_pretty(&db.list_chats(limit)?)?,
+                Query::Chats { limit } => {
+                    serde_json::to_string_pretty(&db.list_chats(limit, &Default::default())?)?
+                }
                 Query::History { chat_id, limit } => {
                     serde_json::to_string_pretty(&db.history(&[chat_id], None, limit)?)?
                 }

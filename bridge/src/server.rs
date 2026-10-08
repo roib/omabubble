@@ -3,6 +3,7 @@
 use crate::contacts;
 use crate::db::Db;
 use crate::log;
+use crate::marks::ReadMarks;
 use crate::redact::redact;
 use crate::send::{Sender, Target};
 use crate::watch;
@@ -60,6 +61,7 @@ struct Shared {
     db: PathBuf,
     contacts: Option<PathBuf>,
     sender: Sender,
+    marks: Mutex<ReadMarks>,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -101,6 +103,8 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
         db: opts.db.clone(),
         contacts: opts.contacts.clone(),
         sender: Sender::new(opts.dry_run_send),
+        // Beside the socket: a private directory the bridge already owns.
+        marks: Mutex::new(ReadMarks::load(opts.socket.with_file_name("read.json"))),
     });
     for stream in listener.incoming() {
         let stream = match stream {
@@ -190,7 +194,7 @@ fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
             continue;
         }
         let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch(&db, shared, req),
+            Ok(req) => dispatch(&db, shared, hub, req),
             Err(e) => Response::error(0, format!("bad request: {e}")),
         };
         if tx.send(serde_json::to_string(&resp)?).is_err() {
@@ -206,7 +210,7 @@ fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(db: &Db, shared: &Shared, req: Request) -> Response {
+fn dispatch(db: &Db, shared: &Shared, hub: &Hub, req: Request) -> Response {
     let id = req.id;
     let sender = &shared.sender;
     let result = match req.cmd {
@@ -219,11 +223,31 @@ fn dispatch(db: &Db, shared: &Shared, req: Request) -> Response {
             )),
             ..Default::default()
         }),
-        Command::ListChats { limit } => db.list_chats(limit.min(MAX_LIMIT)).map(|chats| Response {
-            id,
-            chats: Some(chats),
-            ..Default::default()
-        }),
+        Command::ListChats { limit } => {
+            let read_upto = shared.marks.lock().unwrap().all().clone();
+            db.list_chats(limit.min(MAX_LIMIT), &read_upto)
+                .map(|chats| Response {
+                    id,
+                    chats: Some(chats),
+                    ..Default::default()
+                })
+        }
+        Command::MarkRead { chat_ids, rowid } => {
+            let changed = shared.marks.lock().unwrap().mark(&chat_ids, rowid);
+            changed.map(|changed| {
+                if changed {
+                    // Every client, the sender included, so all their counts agree.
+                    if let Ok(line) = serde_json::to_string(&Event::Read { chat_ids, rowid }) {
+                        hub.broadcast(&line);
+                    }
+                }
+                Response {
+                    id,
+                    ok: Some(true),
+                    ..Default::default()
+                }
+            })
+        }
         Command::History {
             chat_id,
             chat_ids,
@@ -326,6 +350,7 @@ mod tests {
         let socket = std::env::temp_dir()
             .join(format!("imsg-test-{}", std::process::id()))
             .join("bridge.sock");
+        let _ = std::fs::remove_file(socket.with_file_name("read.json"));
         let opts = ServeOpts {
             db,
             socket: socket.clone(),
@@ -393,6 +418,29 @@ mod tests {
         );
         assert_eq!(people[1].handles, vec!["+15550000002", "+15550000004"]);
         assert!(people.iter().all(|p| p.name.is_none()));
+
+        // Marking read reaches every client as an event, then lowers the count.
+        writeln!(
+            w,
+            r#"{{"id":5,"cmd":"mark_read","chat_ids":[1],"rowid":8}}"#
+        )
+        .unwrap();
+        assert!(matches!(
+            next(),
+            ServerMsg::Event(Event::Read { ref chat_ids, rowid: 8 }) if chat_ids == &[1]
+        ));
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        assert_eq!((r.id, r.ok), (5, Some(true)));
+        writeln!(w, r#"{{"id":6,"cmd":"list_chats","limit":10}}"#).unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        let chats = r.chats.unwrap();
+        assert_eq!((chats[0].chat_id, chats[0].unread), (1, 0));
+        let saved = std::fs::read_to_string(socket.with_file_name("read.json")).unwrap();
+        assert_eq!(saved, r#"{"1":8}"#);
 
         writeln!(w, "not json").unwrap();
         let ServerMsg::Response(r) = next() else {

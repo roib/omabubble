@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -41,6 +41,11 @@ pub enum Command {
         chat_guid: Option<String>,
         text: String,
     },
+    /// Everything up to `rowid` in these chat rows has been read in a TUI.
+    MarkRead {
+        chat_ids: Vec<i64>,
+        rowid: i64,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -73,10 +78,24 @@ impl Response {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    Hello { version: u32, bridge: String },
-    NewMessage { message: Message },
-    MessageUpdated { message: Message },
-    Error { msg: String },
+    Hello {
+        version: u32,
+        bridge: String,
+    },
+    NewMessage {
+        message: Message,
+    },
+    MessageUpdated {
+        message: Message,
+    },
+    /// A client read these chat rows up to `rowid`.
+    Read {
+        chat_ids: Vec<i64>,
+        rowid: i64,
+    },
+    Error {
+        msg: String,
+    },
 }
 
 /// Anything the bridge writes to a client.

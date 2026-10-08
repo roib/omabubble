@@ -178,6 +178,7 @@ enum ReqKind {
     History { chat_id: i64, older: bool },
     Since,
     Send { local_id: u64 },
+    MarkRead,
 }
 
 pub struct App {
@@ -216,8 +217,10 @@ pub struct App {
     pub flash: Option<(String, Instant, Duration)>,
 
     max_seen: i64,
-    /// chat_id → newest rowid the user has looked at in this session.
+    /// chat_id → newest rowid the user has looked at.
     read_upto: HashMap<i64, i64>,
+    /// The part of `read_upto` already sent to the bridge since connecting.
+    read_sent: HashMap<i64, i64>,
     next_id: u64,
     next_local: u64,
     inflight: HashMap<u64, ReqKind>,
@@ -267,6 +270,7 @@ impl App {
             flash: None,
             max_seen: 0,
             read_upto: HashMap::new(),
+            read_sent: HashMap::new(),
             next_id: 0,
             next_local: 0,
             inflight: HashMap::new(),
@@ -348,6 +352,12 @@ impl App {
                         ReqKind::Since,
                     );
                 }
+                // The bridge may have missed marks while we were away; they're idempotent.
+                self.read_sent.clear();
+                let marks: Vec<(i64, i64)> = self.read_upto.iter().map(|(&c, &r)| (c, r)).collect();
+                for (chat_id, rowid) in marks {
+                    self.mark_read(chat_id, rowid);
+                }
                 self.request(Command::People { names: self.names }, ReqKind::People);
                 self.request(Command::ListChats { limit: CHAT_LIMIT }, ReqKind::ListChats);
                 // Self-heal the open chat after a reconnect.
@@ -362,7 +372,45 @@ impl App {
             }
             Event::NewMessage { message } => self.ingest(message, true, false, now),
             Event::MessageUpdated { message } => self.ingest(message, true, true, now),
+            Event::Read { chat_ids, rowid } => self.on_read(&chat_ids, rowid),
             Event::Error { msg } => self.last_bridge_error = Some(msg),
+        }
+    }
+
+    /// Another client (or this one) read these chat rows up to `rowid`.
+    fn on_read(&mut self, chat_ids: &[i64], rowid: i64) {
+        for c in &mut self.chats {
+            if !chat_ids.contains(&c.chat_id) && !c.chat_ids.iter().any(|id| chat_ids.contains(id))
+            {
+                continue;
+            }
+            for map in [&mut self.read_upto, &mut self.read_sent] {
+                let e = map.entry(c.chat_id).or_insert(0);
+                *e = (*e).max(rowid);
+            }
+            if c.last.as_ref().is_none_or(|m| m.rowid <= rowid) {
+                c.unread = 0;
+            }
+        }
+    }
+
+    /// Records that `chat_id` (a row of the chat list) has been read up to
+    /// `rowid` and tells the bridge, which keeps it for every client.
+    fn mark_read(&mut self, chat_id: i64, rowid: i64) {
+        let e = self.read_upto.entry(chat_id).or_insert(0);
+        *e = (*e).max(rowid);
+        let rowid = *e;
+        if rowid <= self.read_sent.get(&chat_id).copied().unwrap_or(0) {
+            return;
+        }
+        let chat_ids = match self.chats.iter().find(|c| c.chat_id == chat_id) {
+            Some(c) => std::iter::once(c.chat_id)
+                .chain(c.chat_ids.iter().copied())
+                .collect(),
+            None => vec![chat_id],
+        };
+        if self.request(Command::MarkRead { chat_ids, rowid }, ReqKind::MarkRead) {
+            self.read_sent.insert(chat_id, rowid);
         }
     }
 
@@ -405,6 +453,8 @@ impl App {
                     p.acked_at = Some(now);
                 }
             }
+            // Counts change through the `read` event the bridge broadcasts.
+            ReqKind::MarkRead => {}
         }
     }
 
@@ -671,9 +721,8 @@ impl App {
             v.appended = true;
         }
         v.messages.sort_by_key(|m| (m.ts, m.rowid));
-        if let Some(last) = v.messages.last() {
-            let e = self.read_upto.entry(chat_id).or_insert(0);
-            *e = (*e).max(last.rowid);
+        if let Some(last) = v.messages.last().map(|m| m.rowid) {
+            self.mark_read(chat_id, last);
         }
         self.clamp_sel();
     }
@@ -699,6 +748,7 @@ impl App {
         }
 
         let mut chat_display = None;
+        let mut read = false;
         let known = if let Some(c) = self.chats.iter_mut().find(|c| c.chat_id == m.chat_id) {
             if updated {
                 if c.last.as_ref().is_some_and(|l| l.rowid == m.rowid) {
@@ -712,8 +762,7 @@ impl App {
                     c.last = Some(m.clone());
                 }
                 if open_here {
-                    let e = self.read_upto.entry(m.chat_id).or_insert(0);
-                    *e = (*e).max(m.rowid);
+                    read = true;
                 } else if !m.from_me && m.kind != Kind::Tapback {
                     c.unread += 1;
                 }
@@ -723,6 +772,9 @@ impl App {
         } else {
             false
         };
+        if read {
+            self.mark_read(m.chat_id, m.rowid);
+        }
         if !known && !updated {
             self.chats_dirty = true;
         }
@@ -932,8 +984,7 @@ impl App {
         c.unread = 0;
         let id = c.chat_id;
         let last = c.last.as_ref().map_or(0, |m| m.rowid);
-        let e = self.read_upto.entry(id).or_insert(0);
-        *e = (*e).max(last);
+        self.mark_read(id, last);
         self.focus = Focus::Input;
         if self.open_chat_id() == Some(id) {
             return;
@@ -1647,8 +1698,16 @@ mod tests {
         serde_json::to_string(v).unwrap()
     }
 
-    /// Pops queued requests, returning (id, cmd).
+    /// Pops queued requests, returning (id, cmd), leaving out read marks
+    /// (see `read_marks_reach_the_bridge`).
     fn requests(app: &mut App) -> Vec<(u64, Command)> {
+        all_requests(app)
+            .into_iter()
+            .filter(|(_, c)| !matches!(c, Command::MarkRead { .. }))
+            .collect()
+    }
+
+    fn all_requests(app: &mut App) -> Vec<(u64, Command)> {
         let mut out = Vec::new();
         app.effects.retain(|e| match e {
             Effect::Request(r) => {
@@ -1848,6 +1907,63 @@ mod tests {
             requests(&mut app)[..],
             [(_, Command::People { .. }), (_, Command::ListChats { .. })]
         ));
+    }
+
+    #[test]
+    fn read_marks_reach_the_bridge() {
+        let (mut app, now) = connected();
+        app.chats[1].unread = 3;
+        app.on_key(key(KeyCode::Enter), now);
+        let marks = |app: &mut App| -> Vec<(Vec<i64>, i64)> {
+            all_requests(app)
+                .into_iter()
+                .filter_map(|(_, c)| match c {
+                    Command::MarkRead { chat_ids, rowid } => Some((chat_ids, rowid)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            marks(&mut app),
+            vec![(vec![1], 10)],
+            "opening a chat marks it"
+        );
+
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(11, 1, false, "more"),
+            }),
+            now,
+        );
+        assert_eq!(
+            marks(&mut app),
+            vec![(vec![1], 11)],
+            "so does a message in the open chat"
+        );
+
+        // Another client read chat 2.
+        app.on_line(
+            &line(&Event::Read {
+                chat_ids: vec![2],
+                rowid: 5,
+            }),
+            now,
+        );
+        let c2 = app.chats.iter().find(|c| c.chat_id == 2).unwrap();
+        assert_eq!(c2.unread, 0);
+
+        // After a reconnect the bridge hears the marks again.
+        app.on_closed("eof".into(), now);
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        let mut again = marks(&mut app);
+        again.sort();
+        assert_eq!(again, vec![(vec![1], 11), (vec![2], 5)]);
     }
 
     #[test]

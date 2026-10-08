@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use proto::{Attachment, Chat, Kind, Message, Tapback};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -184,11 +184,18 @@ impl Db {
             })?)
     }
 
-    pub fn list_chats(&self, limit: u32) -> Result<Vec<Chat>> {
-        self.list_chats_at(limit, now_unix())
+    /// `read_upto` holds per-chat marks from the TUI; messages at or below a
+    /// chat's mark don't count as unread even if Messages still says so.
+    pub fn list_chats(&self, limit: u32, read_upto: &HashMap<i64, i64>) -> Result<Vec<Chat>> {
+        self.list_chats_at(limit, read_upto, now_unix())
     }
 
-    fn list_chats_at(&self, limit: u32, now: i64) -> Result<Vec<Chat>> {
+    fn list_chats_at(
+        &self,
+        limit: u32,
+        read_upto: &HashMap<i64, i64>,
+        now: i64,
+    ) -> Result<Vec<Chat>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.ROWID, c.guid, c.style, c.service_name, c.display_name, c.chat_identifier, \
                     (SELECT MAX(message_date) FROM chat_message_join WHERE chat_id = c.ROWID) AS last_date \
@@ -220,9 +227,16 @@ impl Db {
             let unread: u32 = self.conn.prepare_cached(
                 "SELECT COUNT(*) FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id \
                  WHERE cmj.chat_id = ?1 AND cmj.message_date > ?2 AND m.is_from_me = 0 AND m.is_read = 0 \
-                   AND m.item_type = 0 AND m.associated_message_type = 0",
+                   AND m.item_type = 0 AND m.associated_message_type = 0 AND m.ROWID > ?3",
             )?
-            .query_row(params![chat_id, unread_floor], |r| r.get(0))?;
+            .query_row(
+                params![
+                    chat_id,
+                    unread_floor,
+                    read_upto.get(&chat_id).copied().unwrap_or(0)
+                ],
+                |r| r.get(0),
+            )?;
             let last = self.query_messages(
                 &format!("WHERE cmj.chat_id = ?1 AND {VISIBLE} ORDER BY cmj.message_date DESC, m.ROWID DESC LIMIT 1"),
                 params![chat_id],
@@ -639,7 +653,9 @@ pub mod tests {
     #[test]
     fn lists_chats() {
         let db = Db::open(&fixture_db()).unwrap();
-        let chats = db.list_chats_at(100, 1_791_460_800).unwrap();
+        let chats = db
+            .list_chats_at(100, &HashMap::new(), 1_791_460_800)
+            .unwrap();
         let ids: Vec<i64> = chats.iter().map(|c| c.chat_id).collect();
         assert_eq!(ids, vec![1, 2, 3, 4, 5], "sorted by newest message");
 
@@ -654,9 +670,17 @@ pub mod tests {
         assert_eq!(sms.unread, 1);
         assert_eq!(c1.unread, 2);
         assert_eq!(
-            db.list_chats_at(100, 1_791_460_800 + 60 * 86_400).unwrap()[0].unread,
+            db.list_chats_at(100, &HashMap::new(), 1_791_460_800 + 60 * 86_400)
+                .unwrap()[0]
+                .unread,
             0,
             "outside 30-day window"
+        );
+        let read = HashMap::from([(1, 7)]);
+        assert_eq!(
+            db.list_chats_at(100, &read, 1_791_460_800).unwrap()[0].unread,
+            1,
+            "rows up to the TUI's read mark don't count"
         );
 
         let group = &chats[2];
