@@ -153,33 +153,33 @@ mod tests {
         let rw = Connection::open(&path).unwrap();
         rw.execute_batch(&format!(
             "INSERT INTO message (ROWID, guid, text, handle_id, service, date, is_from_me) \
-               VALUES (20, 'G20', 'fresh', 1, 'iMessage', {d}, 0);
-             INSERT INTO chat_message_join VALUES (1, 20, {d});
-             INSERT INTO message (ROWID, guid, handle_id, date, item_type) VALUES (21, 'G21', 1, {d}, 1);
-             INSERT INTO chat_message_join VALUES (1, 21, {d});
+               VALUES (40, 'G20', 'fresh', 1, 'iMessage', {d}, 0);
+             INSERT INTO chat_message_join VALUES (1, 40, {d});
+             INSERT INTO message (ROWID, guid, handle_id, date, item_type) VALUES (41, 'G21', 1, {d}, 1);
+             INSERT INTO chat_message_join VALUES (1, 41, {d});
              INSERT INTO message (ROWID, guid, text, handle_id, service, date, is_from_me) \
-               VALUES (22, 'G22', 'mine', 1, 'iMessage', {d}, 1);
-             INSERT INTO chat_message_join VALUES (1, 22, {d});",
+               VALUES (42, 'G22', 'mine', 1, 'iMessage', {d}, 1);
+             INSERT INTO chat_message_join VALUES (1, 42, {d});",
             d = ns_ago(10)
         ))
         .unwrap();
         let ev = w.tick().unwrap();
         assert_eq!(ev.len(), 2);
         assert!(
-            matches!(&ev[0], Event::NewMessage { message } if message.rowid == 20 && message.text == "fresh")
+            matches!(&ev[0], Event::NewMessage { message } if message.rowid == 40 && message.text == "fresh")
         );
         assert!(
-            matches!(&ev[1], Event::NewMessage { message } if message.rowid == 22 && message.delivered.is_none())
+            matches!(&ev[1], Event::NewMessage { message } if message.rowid == 42 && message.delivered.is_none())
         );
         assert_eq!(
-            w.last_seen, 22,
+            w.last_seen, 42,
             "invisible system row still advances last_seen"
         );
         assert!(w.tick().unwrap().is_empty());
 
         rw.execute(
             &format!(
-                "UPDATE message SET text = 'fresh!', date_edited = {} WHERE ROWID = 20",
+                "UPDATE message SET text = 'fresh!', date_edited = {} WHERE ROWID = 40",
                 ns_ago(1)
             ),
             [],
@@ -196,7 +196,7 @@ mod tests {
 
         rw.execute(
             &format!(
-                "UPDATE message SET text = NULL, date_retracted = {} WHERE ROWID = 20",
+                "UPDATE message SET text = NULL, date_retracted = {} WHERE ROWID = 40",
                 ns_ago(0)
             ),
             [],
@@ -210,7 +210,7 @@ mod tests {
         // Receipts arrive as updates too, each state once.
         rw.execute(
             &format!(
-                "UPDATE message SET date_delivered = {} WHERE ROWID = 22",
+                "UPDATE message SET date_delivered = {} WHERE ROWID = 42",
                 ns_ago(0)
             ),
             [],
@@ -218,13 +218,13 @@ mod tests {
         .unwrap();
         let ev = w.tick().unwrap();
         assert!(
-            matches!(&ev[..], [Event::MessageUpdated { message }] if message.rowid == 22 && message.delivered.is_some() && message.read.is_none()),
+            matches!(&ev[..], [Event::MessageUpdated { message }] if message.rowid == 42 && message.delivered.is_some() && message.read.is_none()),
             "{ev:?}"
         );
         assert!(w.tick().unwrap().is_empty());
         rw.execute(
             &format!(
-                "UPDATE message SET date_read = {} WHERE ROWID = 22",
+                "UPDATE message SET date_read = {} WHERE ROWID = 42",
                 ns_ago(0)
             ),
             [],

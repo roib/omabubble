@@ -262,7 +262,7 @@ impl Db {
         let mut msgs = self.query_messages(
             &format!(
                 "WHERE cmj.chat_id IN ({ids}) AND (?1 IS NULL OR m.ROWID < ?1) AND {VISIBLE} \
-                 ORDER BY m.ROWID DESC LIMIT ?2"
+                 GROUP BY m.ROWID ORDER BY m.ROWID DESC LIMIT ?2"
             ),
             params![before_rowid, limit],
         )?;
@@ -273,7 +273,9 @@ impl Db {
     /// Messages with ROWID greater than `rowid`, oldest first.
     pub fn since(&self, rowid: i64, limit: u32) -> Result<Vec<Message>> {
         self.query_messages(
-            &format!("WHERE m.ROWID > ?1 AND {VISIBLE} ORDER BY m.ROWID ASC LIMIT ?2"),
+            &format!(
+                "WHERE m.ROWID > ?1 AND {VISIBLE} GROUP BY m.ROWID ORDER BY m.ROWID ASC LIMIT ?2"
+            ),
             params![rowid, limit],
         )
     }
@@ -292,7 +294,7 @@ impl Db {
                 "WHERE m.ROWID > ?1 AND m.ROWID <= ?2 AND m.date > ?3 AND {VISIBLE} \
                    AND ({e} > 0 OR {r} > 0 \
                         OR (m.is_from_me = 1 AND (m.error != 0 OR m.date_delivered != 0 OR m.date_read != 0))) \
-                 ORDER BY m.ROWID ASC"
+                 GROUP BY m.ROWID ORDER BY m.ROWID ASC"
             ),
             params![floor_rowid, last_seen, unix_to_apple_ns(since_unix)],
         )
@@ -712,6 +714,17 @@ pub mod tests {
         let failed = db.history(&[2], None, 50).unwrap();
         assert!(failed[1].is_error && failed[1].from_me);
 
+        let both = db.history(&[4, 5], None, 50).unwrap();
+        assert_eq!(
+            both.iter().map(|m| m.rowid).collect::<Vec<_>>(),
+            vec![18, 19, 23],
+            "a message joined to both chats appears once"
+        );
+        assert_eq!(
+            db.history(&[5], None, 50).unwrap().last().unwrap().rowid,
+            23
+        );
+
         let att = &db.history(&[4], None, 50).unwrap()[0];
         assert_eq!(att.kind, Kind::Attachment);
         assert_eq!(att.text, "");
@@ -753,12 +766,13 @@ pub mod tests {
     #[test]
     fn since_and_changes() {
         let db = Db::open(&fixture_db()).unwrap();
-        assert_eq!(db.max_rowid().unwrap(), 19);
+        assert_eq!(db.max_rowid().unwrap(), 23);
         assert_eq!(db.handle_ids().unwrap().len(), 5);
         let s = db.since(14, 100).unwrap();
         assert_eq!(
             s.iter().map(|m| m.rowid).collect::<Vec<_>>(),
-            vec![15, 18, 19]
+            vec![15, 18, 19, 23],
+            "row 23 sits in two chats but comes back once"
         );
         // Everything in the fixture is in the past relative to this window start.
         let changed = db.recent_changes(0, 19, 1_791_300_000).unwrap();

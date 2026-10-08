@@ -625,7 +625,8 @@ impl App {
             // Keep live messages that arrived after this page was read.
             let newest = msgs.last().map_or(0, |m| m.rowid);
             let live: Vec<Message> = v.messages.drain(..).filter(|m| m.rowid > newest).collect();
-            v.messages = msgs;
+            let mut seen = std::collections::HashSet::new();
+            v.messages = msgs.into_iter().filter(|m| seen.insert(m.rowid)).collect();
             v.messages.extend(live);
             v.appended = true;
         }
