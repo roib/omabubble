@@ -13,6 +13,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const LIST_WIDTH: u16 = 34;
 const TIME_COL: usize = 7; // "10:42  "
+/// Reserved for time + marker on sent messages ("10:42 SMS"), so text ends at
+/// the same column whether or not a marker is present.
+const STATUS_COL: usize = 9;
 const MAX_INPUT_ROWS: usize = 5;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -384,7 +387,8 @@ fn outgoing(
     edited: bool,
     sms: bool,
 ) {
-    let status_w: usize = status.iter().map(|s| s.content.width()).sum::<usize>() + 2;
+    let status_text_w: usize = status.iter().map(|s| s.content.width()).sum();
+    let status_w = status_text_w.max(STATUS_COL) + 2;
     let max_w = (width * 3 / 4).max(20).min(width);
     let edited_w = if edited { " (edited)".width() } else { 0 };
     let text_w = max_w.saturating_sub(status_w + edited_w).max(1);
@@ -419,6 +423,9 @@ fn outgoing(
             }
             spans.push(Span::raw("  "));
             spans.extend(status.iter().cloned());
+            spans.push(Span::raw(
+                " ".repeat(STATUS_COL.saturating_sub(status_text_w)),
+            ));
         } else {
             spans.push(Span::raw(" ".repeat(status_w)));
         }
@@ -806,6 +813,32 @@ mod tests {
         assert_eq!(truncate("héllo wörld", 6), "héllo…");
         assert_eq!(truncate("😀😀😀", 5), "😀😀…");
         assert_eq!(truncate("short", 10), "short");
+    }
+
+    #[test]
+    fn text_ends_at_the_same_column_with_or_without_marker() {
+        let render = |status: Vec<Span<'static>>| {
+            let mut lines = Vec::new();
+            outgoing(
+                &mut lines,
+                60,
+                &Body::Text("same text".into(), vec![]),
+                status,
+                false,
+                false,
+            );
+            let s: String = lines[0]
+                .spans
+                .iter()
+                .map(|sp| sp.content.to_string())
+                .collect();
+            s.find("same text").unwrap()
+        };
+        let plain = render(vec![Span::raw("10:33")]);
+        let sms = render(vec![Span::raw("10:33"), Span::raw(" "), Span::raw("SMS")]);
+        let read = render(vec![Span::raw("10:33"), Span::raw(" "), Span::raw("✓✓")]);
+        assert_eq!(plain, sms);
+        assert_eq!(plain, read);
     }
 
     #[test]
