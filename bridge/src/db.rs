@@ -41,6 +41,8 @@ const REQUIRED: &[(&str, &[&str])] = &[
             "date",
             "is_from_me",
             "is_read",
+            "date_delivered",
+            "date_read",
             "cache_has_attachments",
             "item_type",
             "associated_message_guid",
@@ -132,7 +134,8 @@ impl Db {
         let msg_select = format!(
             "SELECT m.ROWID, cmj.chat_id, h.id, m.is_from_me, m.text, m.attributedBody, m.date, m.service, \
                     m.error, {edited_col}, {retracted_col}, m.cache_has_attachments, \
-                    m.associated_message_type, m.associated_message_guid, {emoji_col} \
+                    m.associated_message_type, m.associated_message_guid, {emoji_col}, \
+                    m.date_delivered, m.date_read \
              FROM message m \
              JOIN chat_message_join cmj ON cmj.message_id = m.ROWID \
              LEFT JOIN handle h ON h.ROWID = m.handle_id"
@@ -287,7 +290,8 @@ impl Db {
         self.query_messages(
             &format!(
                 "WHERE m.ROWID > ?1 AND m.ROWID <= ?2 AND m.date > ?3 AND {VISIBLE} \
-                   AND ({e} > 0 OR {r} > 0 OR (m.is_from_me = 1 AND m.error != 0)) \
+                   AND ({e} > 0 OR {r} > 0 \
+                        OR (m.is_from_me = 1 AND (m.error != 0 OR m.date_delivered != 0 OR m.date_read != 0))) \
                  ORDER BY m.ROWID ASC"
             ),
             params![floor_rowid, last_seen, unix_to_apple_ns(since_unix)],
@@ -375,6 +379,10 @@ impl Db {
             is_error: raw.error != 0,
             edited,
             unsent,
+            // On incoming rows date_read is when *you* read it, not a receipt.
+            delivered: (raw.from_me && raw.date_delivered != 0)
+                .then(|| apple_to_unix(raw.date_delivered)),
+            read: (raw.from_me && raw.date_read != 0).then(|| apple_to_unix(raw.date_read)),
             kind,
             attachments,
             tapback,
@@ -441,6 +449,8 @@ struct RawMsg {
     assoc_type: i64,
     assoc_guid: Option<String>,
     assoc_emoji: Option<String>,
+    date_delivered: i64,
+    date_read: i64,
 }
 
 impl RawMsg {
@@ -461,6 +471,8 @@ impl RawMsg {
             assoc_type: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
             assoc_guid: r.get(13)?,
             assoc_emoji: r.get(14)?,
+            date_delivered: r.get::<_, Option<i64>>(15)?.unwrap_or(0),
+            date_read: r.get::<_, Option<i64>>(16)?.unwrap_or(0),
         })
     }
 }
@@ -676,6 +688,16 @@ pub mod tests {
         );
 
         assert!(h[5].edited);
+        assert_eq!(
+            (h[1].delivered, h[1].read),
+            (Some(1_791_369_185), Some(1_791_369_240))
+        );
+        assert_eq!((h[5].delivered.is_some(), h[5].read), (true, None));
+        assert_eq!(
+            (h[0].delivered, h[0].read),
+            (None, None),
+            "incoming rows carry no receipt"
+        );
         assert_eq!(h[7].text, "this one only has attributedBody 📎");
         assert!(h[8].unsent && h[8].text.is_empty());
         assert_eq!(h[0].sender.as_deref(), Some("+15550000001"));
@@ -742,7 +764,8 @@ pub mod tests {
         let changed = db.recent_changes(0, 19, 1_791_300_000).unwrap();
         assert_eq!(
             changed.iter().map(|m| m.rowid).collect::<Vec<_>>(),
-            vec![6, 9, 11]
+            vec![2, 6, 9, 11],
+            "edited, unsent, failed, delivered/read"
         );
     }
 

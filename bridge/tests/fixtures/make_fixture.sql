@@ -123,3 +123,10 @@ INSERT INTO chat_message_join (chat_id, message_id, message_date)
 INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name, total_bytes) VALUES
     (1, 'A1', '~/Library/Messages/Attachments/aa/00/A1/IMG_1234.heic', 'image/heic', 'IMG_1234.heic', 1234567);
 INSERT INTO message_attachment_join VALUES (18, 1);
+
+-- Receipts on sent messages (Apple-epoch ns): row 2 delivered and read, row 6 delivered only.
+UPDATE message SET date_delivered = (strftime('%s','2026-10-07 10:33:05') - 978307200) * 1000000000,
+                   date_read      = (strftime('%s','2026-10-07 10:34:00') - 978307200) * 1000000000 WHERE ROWID = 2;
+UPDATE message SET date_delivered = (strftime('%s','2026-10-07 10:40:03') - 978307200) * 1000000000 WHERE ROWID = 6;
+-- On an incoming row date_read is when you read it; it must not surface as a receipt.
+UPDATE message SET date_read = (strftime('%s','2026-10-07 10:31:30') - 978307200) * 1000000000 WHERE ROWID = 1;

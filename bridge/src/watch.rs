@@ -24,6 +24,8 @@ struct Snapshot {
     edited: bool,
     unsent: bool,
     is_error: bool,
+    delivered: Option<i64>,
+    read: Option<i64>,
 }
 
 impl Snapshot {
@@ -33,6 +35,8 @@ impl Snapshot {
             edited: m.edited,
             unsent: m.unsent,
             is_error: m.is_error,
+            delivered: m.delivered,
+            read: m.read,
         }
     }
 }
@@ -152,17 +156,23 @@ mod tests {
                VALUES (20, 'G20', 'fresh', 1, 'iMessage', {d}, 0);
              INSERT INTO chat_message_join VALUES (1, 20, {d});
              INSERT INTO message (ROWID, guid, handle_id, date, item_type) VALUES (21, 'G21', 1, {d}, 1);
-             INSERT INTO chat_message_join VALUES (1, 21, {d});",
+             INSERT INTO chat_message_join VALUES (1, 21, {d});
+             INSERT INTO message (ROWID, guid, text, handle_id, service, date, is_from_me) \
+               VALUES (22, 'G22', 'mine', 1, 'iMessage', {d}, 1);
+             INSERT INTO chat_message_join VALUES (1, 22, {d});",
             d = ns_ago(10)
         ))
         .unwrap();
         let ev = w.tick().unwrap();
-        assert_eq!(ev.len(), 1);
+        assert_eq!(ev.len(), 2);
         assert!(
             matches!(&ev[0], Event::NewMessage { message } if message.rowid == 20 && message.text == "fresh")
         );
+        assert!(
+            matches!(&ev[1], Event::NewMessage { message } if message.rowid == 22 && message.delivered.is_none())
+        );
         assert_eq!(
-            w.last_seen, 21,
+            w.last_seen, 22,
             "invisible system row still advances last_seen"
         );
         assert!(w.tick().unwrap().is_empty());
@@ -196,5 +206,31 @@ mod tests {
         assert!(
             matches!(&ev[..], [Event::MessageUpdated { message }] if message.unsent && message.text.is_empty())
         );
+
+        // Receipts arrive as updates too, each state once.
+        rw.execute(
+            &format!(
+                "UPDATE message SET date_delivered = {} WHERE ROWID = 22",
+                ns_ago(0)
+            ),
+            [],
+        )
+        .unwrap();
+        let ev = w.tick().unwrap();
+        assert!(
+            matches!(&ev[..], [Event::MessageUpdated { message }] if message.rowid == 22 && message.delivered.is_some() && message.read.is_none()),
+            "{ev:?}"
+        );
+        assert!(w.tick().unwrap().is_empty());
+        rw.execute(
+            &format!(
+                "UPDATE message SET date_read = {} WHERE ROWID = 22",
+                ns_ago(0)
+            ),
+            [],
+        )
+        .unwrap();
+        let ev = w.tick().unwrap();
+        assert!(matches!(&ev[..], [Event::MessageUpdated { message }] if message.read.is_some()));
     }
 }

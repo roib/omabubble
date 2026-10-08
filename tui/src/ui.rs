@@ -226,8 +226,14 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
         lines.push(Line::from("— start of conversation —".dark_gray()).centered());
     }
 
+    // Messages shows the receipt under your latest sent message only.
+    let items = app.items();
+    let last_mine = items.iter().rposition(
+        |it| matches!(it, Item::Msg(m) if m.from_me && !m.unsent && m.tapback.is_none()),
+    );
+
     let mut last_day = None;
-    for item in app.items() {
+    for (i, item) in items.into_iter().enumerate() {
         let ts = match &item {
             Item::Msg(m) => m.ts,
             Item::Pending(p) => p.ts,
@@ -279,6 +285,12 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                 }
             }
         }
+        if Some(i) == last_mine
+            && let Item::Msg(m) = &item
+            && let Some(text) = receipt(m)
+        {
+            lines.push(Line::from(Span::styled(text, Style::new().dark_gray())).right_aligned());
+        }
         ranges.push((start, lines.len()));
     }
     (lines, ranges)
@@ -311,6 +323,18 @@ fn body(m: &Message) -> Body {
         m.text.clone()
     };
     Body::Text(text, atts)
+}
+
+/// "Read 10:42" beats "Delivered"; nothing for failed or unreceipted messages.
+fn receipt(m: &Message) -> Option<String> {
+    if m.is_error {
+        return None;
+    }
+    match (m.read, m.delivered) {
+        (Some(t), _) => Some(format!("Read {}", hhmm(t))),
+        (None, Some(_)) => Some("Delivered".into()),
+        (None, None) => None,
+    }
 }
 
 fn status_of_msg(m: &Message) -> Option<(String, Style)> {
@@ -671,6 +695,34 @@ mod tests {
         assert_eq!(cur, (1, 0));
         let (_, cur) = input_layout("abcd", 4, 4);
         assert_eq!(cur, (1, 0), "cursor after a full row moves down");
+    }
+
+    #[test]
+    fn receipt_text() {
+        let mut m = Message {
+            rowid: 1,
+            chat_id: 1,
+            sender: None,
+            from_me: true,
+            text: "x".into(),
+            ts: 0,
+            service: "iMessage".into(),
+            is_error: false,
+            edited: false,
+            unsent: false,
+            delivered: None,
+            read: None,
+            kind: Kind::Text,
+            attachments: vec![],
+            tapback: None,
+        };
+        assert_eq!(receipt(&m), None);
+        m.delivered = Some(1_791_369_185);
+        assert_eq!(receipt(&m).as_deref(), Some("Delivered"));
+        m.read = Some(1_791_369_240);
+        assert!(receipt(&m).unwrap().starts_with("Read "));
+        m.is_error = true;
+        assert_eq!(receipt(&m), None);
     }
 
     #[test]

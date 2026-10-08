@@ -155,6 +155,7 @@ The app doesn't capture the mouse, so your terminal's drag-select still works.
 | time | Confirmed: the message is in chat.db |
 | `✗ failed` | osascript failed, or Messages marked it with an error |
 | `? unconfirmed` | No echo after 30s, or the connection dropped mid-send |
+| `Delivered` / `Read 10:42` | Shown under your latest message in the open chat, from chat.db's receipts; `Read` needs the other person to share read receipts |
 
 ## Limitations
 

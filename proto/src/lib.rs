@@ -142,6 +142,12 @@ pub struct Message {
     pub is_error: bool,
     pub edited: bool,
     pub unsent: bool,
+    /// For messages you sent: when it reached the recipient (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered: Option<i64>,
+    /// For messages you sent: when the recipient read it (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<i64>,
     pub kind: Kind,
     #[serde(default)]
     pub attachments: Vec<Attachment>,

@@ -1317,6 +1317,8 @@ mod tests {
             is_error: false,
             edited: false,
             unsent: false,
+            delivered: None,
+            read: None,
             kind: Kind::Text,
             attachments: vec![],
             tapback: None,
