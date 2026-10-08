@@ -645,6 +645,18 @@ impl App {
         m.chat_id = self.primary_id(raw_chat);
         let open_here = self.open_chat_id() == Some(m.chat_id);
 
+        // Messages reports some failures only after accepting the send; the
+        // watcher pushes each state change once, so this fires once per failure.
+        if updated && m.from_me && m.is_error {
+            let to = self
+                .chats
+                .iter()
+                .find(|c| c.chat_id == m.chat_id)
+                .map(|c| c.display.clone())
+                .unwrap_or_default();
+            self.hint(format!("✗ not delivered to {to}"), now);
+        }
+
         let mut chat_display = None;
         let known = if let Some(c) = self.chats.iter_mut().find(|c| c.chat_id == m.chat_id) {
             if updated {
@@ -1324,7 +1336,9 @@ pub fn preview(m: &Message) -> String {
             .join(" "),
         _ => m.text.lines().next().unwrap_or("").to_string(),
     };
-    if m.from_me {
+    if m.from_me && m.is_error {
+        format!("✗ you: {body}")
+    } else if m.from_me {
         format!("you: {body}")
     } else {
         body
@@ -1949,6 +1963,26 @@ mod tests {
         assert!(app.effects.iter().any(
             |e| matches!(e, Effect::Notify { body, title } if body == "New message" && title == "imsg")
         ));
+    }
+
+    #[test]
+    fn async_failure_flashes_and_marks_preview() {
+        let (mut app, now) = connected();
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 2, true, "hi"),
+            }),
+            now,
+        );
+        assert!(app.flash.is_none());
+        let mut failed = msg(20, 2, true, "hi");
+        failed.is_error = true;
+        app.on_line(&line(&Event::MessageUpdated { message: failed }), now);
+        assert_eq!(
+            app.flash.as_ref().unwrap().0,
+            "✗ not delivered to +15550000002"
+        );
+        assert_eq!(preview(app.chats[0].last.as_ref().unwrap()), "✗ you: hi");
     }
 
     #[test]

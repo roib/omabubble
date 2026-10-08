@@ -263,6 +263,7 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                 &body(m),
                 status_of_msg(m),
                 m.edited,
+                m.service == "SMS",
             ),
             Item::Msg(m) => {
                 let who = match (&m.sender, is_group) {
@@ -284,6 +285,7 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                     &Body::Text(p.text.clone(), vec![]),
                     Some(status),
                     false,
+                    false,
                 );
                 if let PendState::Failed(e) = &p.state {
                     let e = truncate(e, width.saturating_sub(2));
@@ -295,7 +297,12 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
             && let Item::Msg(m) = &item
             && let Some(text) = receipt(m)
         {
-            lines.push(Line::from(Span::styled(text, Style::new().dark_gray())).right_aligned());
+            let style = if m.is_error {
+                Style::new().red()
+            } else {
+                Style::new().dark_gray()
+            };
+            lines.push(Line::from(Span::styled(text, style)).right_aligned());
         }
         ranges.push((start, lines.len()));
     }
@@ -334,11 +341,13 @@ fn body(m: &Message) -> Body {
 /// "Read 10:42" beats "Delivered"; nothing for failed or unreceipted messages.
 fn receipt(m: &Message) -> Option<String> {
     if m.is_error {
-        return None;
+        return Some("Not Delivered".into());
     }
     match (m.read, m.delivered) {
         (Some(t), _) => Some(format!("Read {}", hhmm(t))),
+        (None, Some(_)) if m.service == "SMS" => Some("Sent as Text Message".into()),
         (None, Some(_)) => Some("Delivered".into()),
+        (None, None) if m.service == "SMS" => Some("Sent as Text Message".into()),
         (None, None) => None,
     }
 }
@@ -355,13 +364,15 @@ fn outgoing(
     body: &Body,
     status: Option<(String, Style)>,
     edited: bool,
+    sms: bool,
 ) {
     let (status, status_style) = status.unwrap_or_else(|| (hhmm(ts), Style::new().dark_gray()));
     let status_w = status.width() + 2;
     let max_w = (width * 3 / 4).max(20).min(width);
     let edited_w = if edited { " (edited)".width() } else { 0 };
     let text_w = max_w.saturating_sub(status_w + edited_w).max(1);
-    let own = Style::new().fg(Color::LightBlue);
+    // Blue for iMessage, green for a text message, like Messages.
+    let own = Style::new().fg(if sms { Color::Green } else { Color::LightBlue });
 
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     match body {
@@ -729,7 +740,13 @@ mod tests {
         m.read = Some(1_791_369_240);
         assert!(receipt(&m).unwrap().starts_with("Read "));
         m.is_error = true;
-        assert_eq!(receipt(&m), None);
+        assert_eq!(receipt(&m).as_deref(), Some("Not Delivered"));
+        m.is_error = false;
+        m.read = None;
+        m.service = "SMS".into();
+        assert_eq!(receipt(&m).as_deref(), Some("Sent as Text Message"));
+        m.delivered = None;
+        assert_eq!(receipt(&m).as_deref(), Some("Sent as Text Message"));
     }
 
     #[test]
@@ -749,6 +766,7 @@ mod tests {
             &Body::Text("🙌 ".repeat(20), vec![]),
             None,
             true,
+            false,
         );
         for l in &lines {
             assert!(l.width() <= 40, "{l:?} is {} wide", l.width());
