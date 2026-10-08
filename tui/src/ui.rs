@@ -121,11 +121,14 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         Some(Target::Chat(_)) => app
             .chat_for_view()
             .map(|c| {
-                format!(
-                    " {}{} ",
-                    c.display,
-                    if c.service == "SMS" { " [SMS]" } else { "" }
-                )
+                // A named 1:1 chat keeps its handles visible in the title.
+                let handles = c.handles.join(" / ");
+                let who = if c.is_group || c.display == handles {
+                    c.display.clone()
+                } else {
+                    format!("{} · {handles}", c.display)
+                };
+                format!(" {who}{} ", if c.service == "SMS" { " [SMS]" } else { "" })
             })
             .unwrap_or_else(|| " … ".into()),
         Some(Target::Draft(h)) => format!(" {h} (new) "),
@@ -249,7 +252,13 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                 status_of_msg(m),
                 m.edited,
             ),
-            Item::Msg(m) => incoming(&mut lines, width, m, is_group),
+            Item::Msg(m) => {
+                let who = match (&m.sender, is_group) {
+                    (Some(s), true) => Some(app.label(s)),
+                    _ => None,
+                };
+                incoming(&mut lines, width, m, who)
+            }
             Item::Pending(p) => {
                 let status = match &p.state {
                     PendState::Sending => ("sending…".to_string(), Style::new().dark_gray()),
@@ -361,15 +370,13 @@ fn outgoing(
     }
 }
 
-fn incoming(lines: &mut Vec<Line<'static>>, width: usize, m: &Message, is_group: bool) {
+/// `who` is the sender label to prefix in group chats.
+fn incoming(lines: &mut Vec<Line<'static>>, width: usize, m: &Message, who: Option<String>) {
     let time = Span::styled(
         format!("{:<TIME_COL$}", hhmm(m.ts)),
         Style::new().dark_gray(),
     );
-    let sender = match (&m.sender, is_group) {
-        (Some(s), true) => Some(format!("[{s}] ")),
-        _ => None,
-    };
+    let sender = who.map(|s| format!("[{s}] "));
     let sender_w = sender.as_ref().map_or(0, |s| s.width());
     let text_w = width.saturating_sub(TIME_COL).max(1);
     let indent = " ".repeat(TIME_COL);

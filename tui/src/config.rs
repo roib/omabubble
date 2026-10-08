@@ -43,7 +43,7 @@ impl Default for Config {
             country_code: "1".into(),
             notifications: true,
             bell: false,
-            names: false,
+            names: true,
             people: Vec::new(),
         }
     }
@@ -67,9 +67,9 @@ notifications = true
 bell = false
 
 # The bridge uses the Mac's Contacts to show one conversation per person, even
-# when chat.db has separate chats for their phone number and email. Set this to
-# show their Contacts name instead of the handles.
-names = false
+# when chat.db has separate chats for their phone number and email. With names
+# on, the chat list shows the Contacts name; set to false for handles only.
+names = true
 
 # Override for someone Contacts doesn't link:
 # [[person]]

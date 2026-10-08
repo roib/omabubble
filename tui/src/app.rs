@@ -446,6 +446,18 @@ impl App {
         })
     }
 
+    /// Contacts name for a handle, when known.
+    pub fn name_of(&self, handle: &str) -> Option<&str> {
+        self.person_of(handle)
+            .and_then(|p| self.people[p].name.as_deref())
+    }
+
+    /// Name if known, otherwise the handle itself.
+    pub fn label(&self, handle: &str) -> String {
+        self.name_of(handle)
+            .map_or_else(|| handle.to_string(), String::from)
+    }
+
     /// chat.db keeps one chat row per handle. Fold the rows of each configured
     /// person into one chat whose id and guid are those of the newest row.
     fn merge_chats(&self, chats: Vec<Chat>) -> Vec<Chat> {
@@ -472,6 +484,17 @@ impl App {
                 Some(name) => name.clone(),
                 None => c.handles.join(" / "),
             };
+        }
+        // Groups without a name of their own are listed by participant; use names there too.
+        for c in out.iter_mut().filter(|c| c.is_group) {
+            if c.display == c.handles.join(", ") {
+                c.display = c
+                    .handles
+                    .iter()
+                    .map(|h| self.label(h))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
         }
         out
     }
@@ -652,7 +675,11 @@ impl App {
 
         if live && !updated && !m.from_me && !open_here {
             if self.notifications {
-                let sender = m.sender.clone().unwrap_or_default();
+                let sender = m
+                    .sender
+                    .as_deref()
+                    .map(|s| self.label(s))
+                    .unwrap_or_default();
                 let title = match chat_display {
                     Some(d) if d != sender && !sender.is_empty() => format!("{sender} ({d})"),
                     Some(d) => d,
@@ -923,7 +950,7 @@ impl App {
             .iter()
             .map(|it| {
                 if with_meta {
-                    item_with_meta(it)
+                    item_with_meta(it, &|h| self.label(h))
                 } else {
                     item_plain(it)
                 }
@@ -1244,7 +1271,7 @@ pub fn item_plain(it: &Item) -> String {
     }
 }
 
-pub fn item_with_meta(it: &Item) -> String {
+pub fn item_with_meta(it: &Item, label: &dyn Fn(&str) -> String) -> String {
     let (ts, who) = match it {
         Item::Pending(p) => (p.ts, "me".to_string()),
         Item::Msg(m) => (
@@ -1252,7 +1279,7 @@ pub fn item_with_meta(it: &Item) -> String {
             if m.from_me {
                 "me".into()
             } else {
-                m.sender.clone().unwrap_or_default()
+                m.sender.as_deref().map(label).unwrap_or_default()
             },
         ),
     };
@@ -1753,6 +1780,78 @@ mod tests {
             now,
         );
         assert_eq!(app.chats[0].display, "Alex");
+    }
+
+    #[test]
+    fn names_label_group_senders_and_copies() {
+        let now = Instant::now();
+        let mut app = App::new(&cfg());
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        let reqs = requests(&mut app);
+        let mut group = chat(5, "+15550000001", msg(3, 5, false, "hey"));
+        group.is_group = true;
+        group.handles.push("+15550000002".into());
+        group.display = "+15550000001, +15550000002".into();
+        let mut named_group = chat(6, "+15550000001", msg(2, 6, false, "x"));
+        named_group.is_group = true;
+        named_group.display = "Weekend Crew".into();
+        app.on_line(
+            &line(&Response {
+                id: list_id(&reqs),
+                chats: Some(vec![group, named_group]),
+                ..Default::default()
+            }),
+            now,
+        );
+        app.on_line(
+            &line(&Response {
+                id: people_id(&reqs),
+                people: Some(vec![PersonGroup {
+                    handles: vec!["+15550000001".into()],
+                    name: Some("Alex".into()),
+                }]),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert_eq!(app.chats[0].display, "Alex, +15550000002");
+        assert_eq!(
+            app.chats[1].display, "Weekend Crew",
+            "a group's own name wins"
+        );
+        assert_eq!(app.label("+15550000001"), "Alex");
+        assert_eq!(app.label("+15550000009"), "+15550000009");
+
+        app.on_key(key(KeyCode::Enter), now);
+        let id = requests(&mut app)[0].0;
+        app.on_line(
+            &line(&Response {
+                id,
+                messages: Some(vec![msg(3, 5, false, "hey")]),
+                ..Default::default()
+            }),
+            now,
+        );
+        app.on_key(key(KeyCode::Tab), now);
+        app.on_key(key(KeyCode::Tab), now);
+        app.on_key(key(KeyCode::Char('Y')), now);
+        assert!(matches!(app.effects.last(), Some(Effect::Copy(t)) if t.ends_with(" Alex] hey")));
+
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(9, 6, false, "ping"),
+            }),
+            now,
+        );
+        assert!(app.effects.iter().any(
+            |e| matches!(e, Effect::Notify { title, .. } if title == "imsg: Alex (Weekend Crew)")
+        ));
     }
 
     #[test]

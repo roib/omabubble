@@ -2,7 +2,8 @@
 
 iMessage in a terminal on a non-Apple machine. A Mac that stays signed in to
 Messages runs **`imsg-bridge`**. The Linux TUI **`imsg`** talks to it over SSH.
-Contacts aren't looked up: chats show bare phone numbers and emails.
+Chats show Contacts names when the Mac has them, otherwise bare phone numbers
+and emails; `names = false` in the config shows handles only.
 
 ```
 imsg (Linux) ──ssh, restricted key──> imsg-bridge connect ──unix socket──> imsg-bridge serve (LaunchAgent)
@@ -99,8 +100,11 @@ under either. Messages.app shows them as one conversation by consulting
 Contacts, and the bridge does the same: it reads each card's phone numbers,
 email addresses and link id from `~/Library/Application Support/AddressBook/`
 (covered by the Full Disk Access grant), matches them against the handles in
-`chat.db`, and tells the TUI which handles belong to one person. Only those
-groupings cross the wire; names are included only with `names = true`.
+`chat.db`, and tells the TUI which handles belong to one person. With
+`names = true` (the default) the chat list shows the Contacts name, the
+conversation title shows the name with its handles, and group messages are
+prefixed with the sender's name. Set `names = false` to see handles only;
+then only the groupings cross the wire.
 
 For someone Contacts doesn't link, add an override:
 
