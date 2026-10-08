@@ -1,3 +1,4 @@
+mod contacts;
 mod db;
 mod launchd;
 mod relay;
@@ -41,6 +42,12 @@ enum Cmd {
         /// Log sends instead of running osascript.
         #[arg(long)]
         dry_run_send: bool,
+        /// Contacts directory [default: ~/Library/Application Support/AddressBook]
+        #[arg(long)]
+        contacts: Option<PathBuf>,
+        /// Don't read Contacts; chats of one person stay separate.
+        #[arg(long)]
+        no_contacts: bool,
     },
     /// Relay stdin/stdout to the running service (the SSH forced command).
     Connect {
@@ -55,6 +62,8 @@ enum Cmd {
     Query {
         #[arg(long)]
         db: Option<PathBuf>,
+        #[arg(long)]
+        contacts: Option<PathBuf>,
         #[command(subcommand)]
         what: Query,
     },
@@ -74,6 +83,8 @@ enum Query {
     Since {
         rowid: i64,
     },
+    /// Counts only: how many people group several handles. Never prints handles.
+    People,
 }
 
 fn default_db() -> Result<PathBuf> {
@@ -94,20 +105,36 @@ fn main() -> Result<()> {
             db,
             socket,
             dry_run_send,
+            contacts,
+            no_contacts,
         } => server::serve(server::ServeOpts {
             db: db.map_or_else(default_db, Ok)?,
             socket: socket.map_or_else(default_socket, Ok)?,
             dry_run_send,
+            contacts: if no_contacts {
+                None
+            } else {
+                contacts.or_else(contacts::default_dir)
+            },
         }),
         Cmd::Connect { socket } => relay::connect(&socket.map_or_else(default_socket, Ok)?),
         Cmd::Install => launchd::install(),
         Cmd::Uninstall => launchd::uninstall(),
-        Cmd::Query { db, what } => {
+        Cmd::Query { db, contacts, what } => {
             let db = db::Db::open(&db.map_or_else(default_db, Ok)?)?;
             let out = match what {
+                Query::People => {
+                    let dir = contacts.or_else(contacts::default_dir);
+                    let groups = contacts::groups_for(dir.as_deref(), &db.handle_ids()?, false);
+                    let handles: usize = groups.iter().map(|g| g.handles.len()).sum();
+                    format!(
+                        "{{\"people_with_several_handles\": {}, \"handles_covered\": {handles}}}",
+                        groups.len()
+                    )
+                }
                 Query::Chats { limit } => serde_json::to_string_pretty(&db.list_chats(limit)?)?,
                 Query::History { chat_id, limit } => {
-                    serde_json::to_string_pretty(&db.history(chat_id, None, limit)?)?
+                    serde_json::to_string_pretty(&db.history(&[chat_id], None, limit)?)?
                 }
                 Query::Since { rowid } => serde_json::to_string_pretty(&db.since(rowid, 1000)?)?,
             };

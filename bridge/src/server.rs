@@ -1,5 +1,6 @@
 //! `imsg-bridge serve`: Unix socket server with one thread per client.
 
+use crate::contacts;
 use crate::db::Db;
 use crate::log;
 use crate::send::{Sender, Target};
@@ -47,6 +48,15 @@ pub struct ServeOpts {
     pub db: PathBuf,
     pub socket: PathBuf,
     pub dry_run_send: bool,
+    /// Contacts directory; `None` disables merging by person.
+    pub contacts: Option<PathBuf>,
+}
+
+/// Per-process settings shared by client threads.
+struct Shared {
+    db: PathBuf,
+    contacts: Option<PathBuf>,
+    sender: Sender,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -84,7 +94,11 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
         });
     }
 
-    let sender = Arc::new(Sender::new(opts.dry_run_send));
+    let shared = Arc::new(Shared {
+        db: opts.db.clone(),
+        contacts: opts.contacts.clone(),
+        sender: Sender::new(opts.dry_run_send),
+    });
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -93,9 +107,9 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
                 continue;
             }
         };
-        let (hub, sender, db) = (hub.clone(), sender.clone(), opts.db.clone());
+        let (hub, shared) = (hub.clone(), shared.clone());
         std::thread::spawn(move || {
-            if let Err(e) = handle_client(stream, &db, &hub, &sender) {
+            if let Err(e) = handle_client(stream, &shared, &hub) {
                 log!("client error: {e:#}");
             }
         });
@@ -122,7 +136,7 @@ fn bind(socket: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn handle_client(stream: UnixStream, db_path: &Path, hub: &Hub, sender: &Sender) -> Result<()> {
+fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
     let (tx, rx) = channel::<String>();
     let mut writer = stream.try_clone()?;
     let writer_thread = std::thread::spawn(move || {
@@ -144,7 +158,7 @@ fn handle_client(stream: UnixStream, db_path: &Path, hub: &Hub, sender: &Sender)
     };
     tx.send(serde_json::to_string(&hello)?)?;
 
-    let db = match Db::open(db_path) {
+    let db = match Db::open(&shared.db) {
         Ok(db) => db,
         Err(e) => {
             tx.send(serde_json::to_string(&Event::Error {
@@ -161,7 +175,7 @@ fn handle_client(stream: UnixStream, db_path: &Path, hub: &Hub, sender: &Sender)
             continue;
         }
         let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch(&db, sender, req),
+            Ok(req) => dispatch(&db, shared, req),
             Err(e) => Response::error(0, format!("bad request: {e}")),
         };
         if tx.send(serde_json::to_string(&resp)?).is_err() {
@@ -177,9 +191,19 @@ fn handle_client(stream: UnixStream, db_path: &Path, hub: &Hub, sender: &Sender)
     Ok(())
 }
 
-fn dispatch(db: &Db, sender: &Sender, req: Request) -> Response {
+fn dispatch(db: &Db, shared: &Shared, req: Request) -> Response {
     let id = req.id;
+    let sender = &shared.sender;
     let result = match req.cmd {
+        Command::People { names } => db.handle_ids().map(|handles| Response {
+            id,
+            people: Some(contacts::groups_for(
+                shared.contacts.as_deref(),
+                &handles,
+                names,
+            )),
+            ..Default::default()
+        }),
         Command::ListChats { limit } => db.list_chats(limit.min(MAX_LIMIT)).map(|chats| Response {
             id,
             chats: Some(chats),
@@ -187,10 +211,15 @@ fn dispatch(db: &Db, sender: &Sender, req: Request) -> Response {
         }),
         Command::History {
             chat_id,
+            chat_ids,
             before_rowid,
             limit,
         } => db
-            .history(chat_id, before_rowid, limit.min(MAX_LIMIT))
+            .history(
+                &std::iter::once(chat_id).chain(chat_ids).collect::<Vec<_>>(),
+                before_rowid,
+                limit.min(MAX_LIMIT),
+            )
             .map(|messages| Response {
                 id,
                 messages: Some(messages),
@@ -286,6 +315,7 @@ mod tests {
             db,
             socket: socket.clone(),
             dry_run_send: true,
+            contacts: Some(crate::contacts::tests::fixture_dir()),
         };
         std::thread::spawn(move || serve(opts).unwrap());
         let start = std::time::Instant::now();
@@ -335,6 +365,19 @@ mod tests {
             panic!()
         };
         assert!(r.error.unwrap().contains("exactly one"));
+
+        writeln!(w, r#"{{"id":4,"cmd":"people"}}"#).unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        let people = r.people.unwrap();
+        assert_eq!(people.len(), 2, "{people:?}");
+        assert_eq!(
+            people[0].handles,
+            vec!["+15550000001", "friend@example.com"]
+        );
+        assert_eq!(people[1].handles, vec!["+15550000002", "+15550000004"]);
+        assert!(people.iter().all(|p| p.name.is_none()));
 
         writeln!(w, "not json").unwrap();
         let ServerMsg::Response(r) = next() else {

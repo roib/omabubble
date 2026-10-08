@@ -523,7 +523,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::new().white().on_red(),
         )],
     };
-    if let Some((msg, _)) = &app.flash {
+    if let Some((msg, _, _)) = &app.flash {
         left.push(Span::styled(
             format!(" ✓ {msg} "),
             Style::new().black().on_green(),

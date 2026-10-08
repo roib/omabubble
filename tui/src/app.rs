@@ -1,12 +1,12 @@
 //! Application state and logic. No terminal or process I/O here: side effects
 //! are queued in `effects` and carried out by the main loop.
 
-use crate::config::Config;
+use crate::config::{Config, Person};
 use crate::phone;
 use chrono::{Local, TimeZone};
 use proto::{
-    Chat, Command, Event, Kind, Message, PROTOCOL_VERSION, Request, Response, ServerMsg,
-    parse_server_line,
+    Chat, Command, Event, Kind, Message, PROTOCOL_VERSION, PersonGroup, Request, Response,
+    ServerMsg, parse_server_line,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
@@ -18,6 +18,9 @@ const UNCONFIRMED_AFTER: Duration = Duration::from_secs(30);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const FLASH_FOR: Duration = Duration::from_secs(3);
+const HINT_FOR: Duration = Duration::from_secs(12);
+/// Echoes that matched no placeholder, kept for a retry after the chat list refreshes.
+const UNMATCHED_KEEP: usize = 20;
 
 #[derive(Debug)]
 pub enum Effect {
@@ -129,6 +132,7 @@ pub struct Popup {
 #[derive(Debug)]
 enum ReqKind {
     ListChats,
+    People,
     History { chat_id: i64, older: bool },
     Since,
     Send { local_id: u64 },
@@ -139,6 +143,12 @@ pub struct App {
     country_code: String,
     notifications: bool,
     bell: bool,
+    /// Config overrides plus the groups the bridge found in Contacts.
+    people: Vec<Person>,
+    config_people: Vec<Person>,
+    names: bool,
+    /// Chats as the bridge listed them, before merging by person.
+    raw_chats: Vec<Chat>,
 
     pub chats: Vec<Chat>,
     pub selected: usize,
@@ -154,7 +164,8 @@ pub struct App {
     pub status: Status,
     backoff: Duration,
     last_bridge_error: Option<String>,
-    pub flash: Option<(String, Instant)>,
+    /// (message, shown at, how long).
+    pub flash: Option<(String, Instant, Duration)>,
 
     max_seen: i64,
     /// chat_id → newest rowid the user has looked at in this session.
@@ -164,6 +175,7 @@ pub struct App {
     inflight: HashMap<u64, ReqKind>,
     chats_dirty: bool,
     loaded_once: bool,
+    unmatched: Vec<Message>,
 
     pub effects: Vec<Effect>,
     pub quit: bool,
@@ -182,6 +194,10 @@ impl App {
             country_code: cfg.country_code.clone(),
             notifications: cfg.notifications,
             bell: cfg.bell,
+            people: cfg.people.clone(),
+            config_people: cfg.people.clone(),
+            names: cfg.names,
+            raw_chats: Vec::new(),
             chats: Vec::new(),
             selected: 0,
             view: None,
@@ -201,6 +217,7 @@ impl App {
             inflight: HashMap::new(),
             chats_dirty: false,
             loaded_once: false,
+            unmatched: Vec::new(),
             effects: Vec::new(),
             quit: false,
         }
@@ -245,13 +262,13 @@ impl App {
 
     pub fn on_line(&mut self, line: &str, now: Instant) {
         match parse_server_line(line) {
-            Ok(ServerMsg::Event(e)) => self.on_event(e),
+            Ok(ServerMsg::Event(e)) => self.on_event(e, now),
             Ok(ServerMsg::Response(r)) => self.on_response(r, now),
             Err(e) => self.flash_msg(format!("bad line from bridge: {e}"), now),
         }
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event, now: Instant) {
         match event {
             Event::Hello { version, bridge } => {
                 if version != PROTOCOL_VERSION {
@@ -274,6 +291,7 @@ impl App {
                         ReqKind::Since,
                     );
                 }
+                self.request(Command::People { names: self.names }, ReqKind::People);
                 self.request(Command::ListChats { limit: CHAT_LIMIT }, ReqKind::ListChats);
                 // Self-heal the open chat after a reconnect.
                 if let Some(View {
@@ -285,8 +303,8 @@ impl App {
                     self.load_history(id, false);
                 }
             }
-            Event::NewMessage { message } => self.ingest(message, true, false),
-            Event::MessageUpdated { message } => self.ingest(message, true, true),
+            Event::NewMessage { message } => self.ingest(message, true, false, now),
+            Event::MessageUpdated { message } => self.ingest(message, true, true, now),
             Event::Error { msg } => self.last_bridge_error = Some(msg),
         }
     }
@@ -313,13 +331,14 @@ impl App {
             return;
         }
         match kind {
-            ReqKind::ListChats => self.set_chats(r.chats.unwrap_or_default()),
+            ReqKind::ListChats => self.set_chats(r.chats.unwrap_or_default(), now),
+            ReqKind::People => self.set_people(r.people.unwrap_or_default(), now),
             ReqKind::History { chat_id, older } => {
                 self.on_history(chat_id, older, r.messages.unwrap_or_default())
             }
             ReqKind::Since => {
                 for m in r.messages.unwrap_or_default() {
-                    self.ingest(m, false, false);
+                    self.ingest(m, false, false, now);
                 }
             }
             // Confirmation comes from the echo in chat.db, not from this response.
@@ -353,7 +372,7 @@ impl App {
         if self
             .flash
             .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at) > FLASH_FOR)
+            .is_some_and(|(_, at, dur)| now.duration_since(*at) > *dur)
         {
             self.flash = None;
         }
@@ -364,12 +383,18 @@ impl App {
                 .any(|k| matches!(k, ReqKind::ListChats))
         {
             self.chats_dirty = false;
+            // A new chat may be a new handle of a known person.
+            self.request(Command::People { names: self.names }, ReqKind::People);
             self.request(Command::ListChats { limit: CHAT_LIMIT }, ReqKind::ListChats);
         }
     }
 
     fn flash_msg(&mut self, msg: impl Into<String>, now: Instant) {
-        self.flash = Some((msg.into(), now));
+        self.flash = Some((msg.into(), now, FLASH_FOR));
+    }
+
+    fn hint(&mut self, msg: impl Into<String>, now: Instant) {
+        self.flash = Some((msg.into(), now, HINT_FOR));
     }
 
     // ---------------------------------------------------------------- data
@@ -378,13 +403,19 @@ impl App {
         self.chats.get(self.selected).map(|c| c.chat_id)
     }
 
+    /// Newest first; the cursor stays on the chat it was on.
     fn sort_chats(&mut self) {
         let sel = self.selected_chat_id();
         self.chats.sort_by(|a, b| {
             let key = |c: &Chat| c.last.as_ref().map(|m| (m.ts, m.rowid));
             key(b).cmp(&key(a)).then(a.chat_id.cmp(&b.chat_id))
         });
-        self.selected = sel
+        self.select_id(sel);
+    }
+
+    /// Put the cursor on `id`, or on the top chat when it's gone (or `None`).
+    fn select_id(&mut self, id: Option<i64>) {
+        self.selected = id
             .and_then(|id| self.chats.iter().position(|c| c.chat_id == id))
             .unwrap_or(0);
     }
@@ -399,7 +430,67 @@ impl App {
         }
     }
 
-    fn set_chats(&mut self, mut chats: Vec<Chat>) {
+    /// The chat row `raw` is shown under; itself when it isn't merged.
+    fn primary_id(&self, raw: i64) -> i64 {
+        self.chats
+            .iter()
+            .find(|c| c.chat_id == raw || c.chat_ids.contains(&raw))
+            .map_or(raw, |c| c.chat_id)
+    }
+
+    fn person_of(&self, handle: &str) -> Option<usize> {
+        self.people.iter().position(|p| {
+            p.handles
+                .iter()
+                .any(|h| phone::same(h, handle, &self.country_code))
+        })
+    }
+
+    /// chat.db keeps one chat row per handle. Fold the rows of each configured
+    /// person into one chat whose id and guid are those of the newest row.
+    fn merge_chats(&self, chats: Vec<Chat>) -> Vec<Chat> {
+        let mut out: Vec<Chat> = Vec::with_capacity(chats.len());
+        let mut slot: HashMap<usize, usize> = HashMap::new();
+        for c in chats {
+            let person = match c.handles.as_slice() {
+                [h] if !c.is_group => self.person_of(h),
+                _ => None,
+            };
+            match person.and_then(|p| slot.get(&p).copied()) {
+                Some(i) => merge_into(&mut out[i], c),
+                None => {
+                    if let Some(p) = person {
+                        slot.insert(p, out.len());
+                    }
+                    out.push(c);
+                }
+            }
+        }
+        for (p, i) in slot {
+            let c = &mut out[i];
+            c.display = match &self.people[p].name {
+                Some(name) => name.clone(),
+                None => c.handles.join(" / "),
+            };
+        }
+        out
+    }
+
+    fn set_people(&mut self, groups: Vec<PersonGroup>, now: Instant) {
+        self.people = self.config_people.clone();
+        self.people.extend(groups.into_iter().map(|g| Person {
+            name: g.name,
+            handles: g.handles,
+        }));
+        if self.loaded_once {
+            let raw = self.raw_chats.clone();
+            self.set_chats(raw, now);
+        }
+    }
+
+    fn set_chats(&mut self, chats: Vec<Chat>, now: Instant) {
+        self.raw_chats = chats.clone();
+        let mut chats = self.merge_chats(chats);
         let open = self.open_chat_id();
         for c in &mut chats {
             let last = c.last.as_ref().map_or(0, |m| m.rowid);
@@ -416,12 +507,18 @@ impl App {
             }
         }
         self.loaded_once = true;
+        // Resolve the old selection only after sorting, so a first load (no
+        // selection yet) lands on the newest chat rather than an arbitrary one.
         let sel = self.selected_chat_id();
         self.chats = chats;
-        self.selected = sel
-            .and_then(|id| self.chats.iter().position(|c| c.chat_id == id))
-            .unwrap_or(0);
+        self.selected = 0;
         self.sort_chats();
+        self.select_id(sel);
+        // Echoes that landed in chats we hadn't listed yet can be matched now.
+        for mut m in std::mem::take(&mut self.unmatched) {
+            m.chat_id = self.primary_id(m.chat_id);
+            self.match_pending(&m, true, now);
+        }
     }
 
     fn load_history(&mut self, chat_id: i64, older: bool) {
@@ -433,8 +530,15 @@ impl App {
         } else {
             None
         };
+        let chat_ids = self
+            .chats
+            .iter()
+            .find(|c| c.chat_id == chat_id)
+            .map(|c| c.chat_ids.clone())
+            .unwrap_or_default();
         let cmd = Command::History {
             chat_id,
+            chat_ids,
             before_rowid: before,
             limit: HISTORY_PAGE,
         };
@@ -445,7 +549,10 @@ impl App {
         }
     }
 
-    fn on_history(&mut self, chat_id: i64, older: bool, msgs: Vec<Message>) {
+    fn on_history(&mut self, chat_id: i64, older: bool, mut msgs: Vec<Message>) {
+        for m in &mut msgs {
+            m.chat_id = self.primary_id(m.chat_id);
+        }
         let Some(v) = &mut self.view else { return };
         if v.target != Target::Chat(chat_id) {
             return;
@@ -481,10 +588,12 @@ impl App {
         self.clamp_sel();
     }
 
-    fn ingest(&mut self, m: Message, live: bool, updated: bool) {
+    fn ingest(&mut self, mut m: Message, live: bool, updated: bool, now: Instant) {
         if !updated {
             self.max_seen = self.max_seen.max(m.rowid);
         }
+        let raw_chat = m.chat_id;
+        m.chat_id = self.primary_id(raw_chat);
         let open_here = self.open_chat_id() == Some(m.chat_id);
 
         let mut chat_display = None;
@@ -519,8 +628,14 @@ impl App {
             self.sort_chats();
         }
 
-        if !updated && m.from_me {
-            self.match_pending(&m, known);
+        if !updated && m.from_me && !self.match_pending(&m, known, now) && live {
+            // Keep the raw id: the chat list refresh may merge it somewhere.
+            let mut keep = m.clone();
+            keep.chat_id = raw_chat;
+            self.unmatched.push(keep);
+            if self.unmatched.len() > UNMATCHED_KEEP {
+                self.unmatched.remove(0);
+            }
         }
 
         if let Some(v) = &mut self.view
@@ -555,28 +670,33 @@ impl App {
     }
 
     /// Replace the oldest matching placeholder with its echo from chat.db.
-    fn match_pending(&mut self, m: &Message, chat_known: bool) {
+    /// Returns whether a placeholder was confirmed.
+    fn match_pending(&mut self, m: &Message, chat_known: bool, now: Instant) -> bool {
         let chat_handles = self
             .chats
             .iter()
             .find(|c| c.chat_id == m.chat_id)
             .map(|c| c.handles.clone());
         let cc = self.country_code.clone();
-        let Some(pos) = self.pending.iter().position(|p| {
+        let candidate = |p: &Pending| {
             matches!(p.state, PendState::Sending | PendState::Unconfirmed)
                 && m.rowid > p.after_rowid
                 && p.text.trim() == m.text.trim()
+        };
+        let direct = self.pending.iter().position(|p| {
+            candidate(p)
                 && match &p.target {
                     Target::Chat(id) => *id == m.chat_id,
                     Target::Draft(h) => {
                         !chat_known
                             || chat_handles
                                 .as_ref()
-                                .is_some_and(|hs| hs.len() == 1 && phone::same(&hs[0], h, &cc))
+                                .is_some_and(|hs| hs.iter().any(|x| phone::same(x, h, &cc)))
                     }
                 }
-        }) else {
-            return;
+        });
+        let Some(pos) = direct else {
+            return self.match_sibling(m, chat_known, candidate, now);
         };
         let p = self.pending.remove(pos);
         // A new conversation now has a real chat: switch the view to it.
@@ -590,6 +710,50 @@ impl App {
             self.load_history(m.chat_id, false);
         }
         self.clamp_sel();
+        true
+    }
+
+    /// Messages files a copy under another 1:1 chat row of the same person
+    /// when a contact has several handles. Count that as sent and say how to
+    /// merge the rows.
+    fn match_sibling(
+        &mut self,
+        m: &Message,
+        chat_known: bool,
+        candidate: impl Fn(&Pending) -> bool,
+        now: Instant,
+    ) -> bool {
+        let one_on_one = |id: i64| self.chats.iter().any(|c| c.chat_id == id && !c.is_group);
+        if !chat_known || !one_on_one(m.chat_id) {
+            return false;
+        }
+        let Some(pos) = self.pending.iter().position(|p| {
+            candidate(p)
+                && matches!(&p.target, Target::Chat(id) if *id != m.chat_id && one_on_one(*id))
+        }) else {
+            return false;
+        };
+        let p = self.pending.remove(pos);
+        let handles = |id: i64| {
+            self.chats
+                .iter()
+                .find(|c| c.chat_id == id)
+                .map(|c| c.handles.join(" / "))
+                .unwrap_or_default()
+        };
+        let (from, to) = match p.target {
+            Target::Chat(id) => (handles(id), handles(m.chat_id)),
+            Target::Draft(_) => unreachable!(),
+        };
+        self.hint(
+            format!(
+                "sent, filed under {to}: put {from} and {to} on one Contacts card, \
+                 or add [[person]] handles = [\"{from}\", \"{to}\"] to config.toml"
+            ),
+            now,
+        );
+        self.clamp_sel();
+        true
     }
 
     pub fn items(&self) -> Vec<Item<'_>> {
@@ -704,8 +868,9 @@ impl App {
         };
         let existing = self.chats.iter().position(|c| {
             !c.is_group
-                && c.handles.len() == 1
-                && phone::same(&c.handles[0], &handle, &self.country_code)
+                && c.handles
+                    .iter()
+                    .any(|h| phone::same(h, &handle, &self.country_code))
         });
         match existing {
             Some(i) => {
@@ -999,6 +1164,30 @@ impl App {
     }
 }
 
+/// Fold chat row `b` into `a`; the newer row's id, guid and service win.
+fn merge_into(a: &mut Chat, b: Chat) {
+    let key = |m: &Option<Message>| m.as_ref().map(|m| (m.ts, m.rowid));
+    let mut ids = vec![a.chat_id, b.chat_id];
+    ids.append(&mut a.chat_ids);
+    ids.extend(b.chat_ids.iter().copied());
+    if key(&b.last) > key(&a.last) {
+        a.chat_id = b.chat_id;
+        a.guid = b.guid;
+        a.service = b.service;
+        a.last = b.last;
+    }
+    ids.retain(|id| *id != a.chat_id);
+    ids.sort_unstable();
+    ids.dedup();
+    a.chat_ids = ids;
+    for h in b.handles {
+        if !a.handles.contains(&h) {
+            a.handles.push(h);
+        }
+    }
+    a.unread += b.unread;
+}
+
 // -------------------------------------------------------------------- text helpers
 
 pub fn attachment_label(a: &proto::Attachment) -> String {
@@ -1117,6 +1306,7 @@ mod tests {
             handles: vec![handle.into()],
             unread: 0,
             last: Some(last),
+            chat_ids: vec![],
         }
     }
 
@@ -1142,8 +1332,12 @@ mod tests {
     }
 
     fn connected() -> (App, Instant) {
+        connected_with(&cfg())
+    }
+
+    fn connected_with(cfg: &Config) -> (App, Instant) {
         let now = Instant::now();
-        let mut app = App::new(&cfg());
+        let mut app = App::new(cfg);
         app.on_line(
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
@@ -1152,14 +1346,17 @@ mod tests {
             now,
         );
         let reqs = requests(&mut app);
-        assert!(matches!(reqs[..], [(_, Command::ListChats { .. })]));
+        assert!(matches!(
+            reqs[..],
+            [(_, Command::People { .. }), (_, Command::ListChats { .. })]
+        ));
         let chats = vec![
             chat(1, "+15550000001", msg(10, 1, false, "hi")),
             chat(2, "+15550000002", msg(5, 2, false, "yo")),
         ];
         app.on_line(
             &line(&Response {
-                id: reqs[0].0,
+                id: list_id(&reqs),
                 chats: Some(chats),
                 ..Default::default()
             }),
@@ -1297,7 +1494,7 @@ mod tests {
         app.tick(now);
         assert!(matches!(
             requests(&mut app)[..],
-            [(_, Command::ListChats { .. })]
+            [(_, Command::People { .. }), (_, Command::ListChats { .. })]
         ));
     }
 
@@ -1435,6 +1632,349 @@ mod tests {
         app.on_key(key(KeyCode::Char('y')), now);
         assert!(matches!(app.effects.last(), Some(Effect::Copy(t)) if t == "a\nb"));
         assert_eq!(app.flash.as_ref().unwrap().0, "Copied 2 messages");
+    }
+
+    fn two_handle_person() -> Config {
+        Config {
+            people: vec![Person {
+                name: None,
+                handles: vec!["(555) 000-0001".into(), "friend@example.com".into()],
+            }],
+            ..cfg()
+        }
+    }
+
+    /// Id of the pending list_chats request.
+    fn list_id(reqs: &[(u64, Command)]) -> u64 {
+        reqs.iter()
+            .find(|(_, c)| matches!(c, Command::ListChats { .. }))
+            .map(|(id, _)| *id)
+            .expect("list_chats requested")
+    }
+
+    fn people_id(reqs: &[(u64, Command)]) -> u64 {
+        reqs.iter()
+            .find(|(_, c)| matches!(c, Command::People { .. }))
+            .map(|(id, _)| *id)
+            .expect("people requested")
+    }
+
+    /// Answers the pending list_chats; returns the pending people request's id.
+    fn three_chats(app: &mut App, now: Instant) -> u64 {
+        let reqs = requests(app);
+        let chats = vec![
+            chat(1, "+15550000001", msg(10, 1, false, "by phone")),
+            chat(2, "+15550000002", msg(5, 2, false, "yo")),
+            chat(3, "friend@example.com", msg(12, 3, false, "by email")),
+        ];
+        app.on_line(
+            &line(&Response {
+                id: list_id(&reqs),
+                chats: Some(chats),
+                ..Default::default()
+            }),
+            now,
+        );
+        people_id(&reqs)
+    }
+
+    #[test]
+    fn contacts_groups_merge_chats() {
+        let now = Instant::now();
+        let mut app = App::new(&cfg());
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        let people = three_chats(&mut app, now);
+        assert_eq!(app.chats.len(), 3, "nothing merged before Contacts answers");
+        assert_eq!(app.selected, 0, "first load selects the newest chat");
+        app.on_key(key(KeyCode::Enter), now); // open the newest: email row (3)
+        requests(&mut app);
+
+        let group = PersonGroup {
+            handles: vec!["+15550000001".into(), "friend@example.com".into()],
+            name: None,
+        };
+        app.on_line(
+            &line(&Response {
+                id: people,
+                people: Some(vec![group]),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert_eq!(app.chats.len(), 2);
+        let merged = &app.chats[0];
+        assert_eq!((merged.chat_id, merged.chat_ids.clone()), (3, vec![1]));
+        assert_eq!(merged.display, "+15550000001 / friend@example.com");
+        assert_eq!(
+            app.view.as_ref().unwrap().target,
+            Target::Chat(3),
+            "open chat survives the re-merge"
+        );
+
+        // The copy of a send filed under the phone row confirms, with no hint.
+        app.on_paste("hi");
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 1, true, "hi"),
+            }),
+            now,
+        );
+        assert!(app.pending.is_empty());
+        assert!(app.flash.is_none());
+
+        // A new chat triggers both refreshes; a later answer with a name is used.
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(21, 8, false, "new row"),
+            }),
+            now,
+        );
+        app.tick(now);
+        let reqs = requests(&mut app);
+        assert_eq!(reqs.len(), 2);
+        let named = PersonGroup {
+            handles: vec!["+15550000001".into(), "friend@example.com".into()],
+            name: Some("Alex".into()),
+        };
+        app.on_line(
+            &line(&Response {
+                id: people_id(&reqs),
+                people: Some(vec![named]),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert_eq!(app.chats[0].display, "Alex");
+    }
+
+    #[test]
+    fn names_flag_is_sent() {
+        let now = Instant::now();
+        let mut app = App::new(&Config {
+            names: true,
+            ..cfg()
+        });
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        let reqs = requests(&mut app);
+        assert!(matches!(reqs[0].1, Command::People { names: true }));
+    }
+
+    #[test]
+    fn configured_person_merges_chat_rows() {
+        let now = Instant::now();
+        let mut app = App::new(&two_handle_person());
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        three_chats(&mut app, now);
+
+        assert_eq!(app.chats.len(), 2);
+        let merged = &app.chats[0];
+        assert_eq!(
+            (merged.chat_id, merged.chat_ids.clone()),
+            (3, vec![1]),
+            "newest row is primary"
+        );
+        assert_eq!(merged.display, "+15550000001 / friend@example.com");
+        assert_eq!(merged.guid, "iMessage;-;friend@example.com");
+
+        app.on_key(key(KeyCode::Enter), now);
+        let reqs = requests(&mut app);
+        assert!(
+            matches!(&reqs[0].1, Command::History { chat_id: 3, chat_ids, .. } if chat_ids == &[1])
+        );
+        app.on_line(
+            &line(&Response {
+                id: reqs[0].0,
+                messages: Some(vec![
+                    msg(10, 1, false, "by phone"),
+                    msg(12, 3, false, "by email"),
+                ]),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert_eq!(app.items().len(), 2);
+        assert!(
+            app.view
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .all(|m| m.chat_id == 3),
+            "history rows map to the primary"
+        );
+
+        // The copy of a send is filed under the phone row: still confirmed, and shown.
+        app.on_paste("hi");
+        app.on_key(key(KeyCode::Enter), now);
+        assert!(
+            matches!(&requests(&mut app)[0].1, Command::Send { chat_guid: Some(g), .. } if g == "iMessage;-;friend@example.com")
+        );
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 1, true, "hi"),
+            }),
+            now,
+        );
+        assert!(app.pending.is_empty());
+        assert_eq!(app.items().len(), 3);
+        assert!(app.flash.is_none());
+
+        // Incoming on the phone row while the merged chat is open: no unread, no notification.
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(21, 1, false, "back"),
+            }),
+            now,
+        );
+        assert_eq!(app.chats[0].unread, 0);
+        assert!(
+            app.effects
+                .iter()
+                .all(|e| !matches!(e, Effect::Notify { .. }))
+        );
+        assert_eq!(app.items().len(), 4);
+
+        // Typing either handle in the popup opens the merged chat.
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Char('n')), now);
+        app.on_paste("friend@example.com");
+        app.on_key(key(KeyCode::Enter), now);
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.view.as_ref().unwrap().target, Target::Chat(3));
+    }
+
+    #[test]
+    fn named_person_without_merge_shows_name() {
+        let now = Instant::now();
+        let cfg = Config {
+            people: vec![Person {
+                name: Some("Alex".into()),
+                handles: vec!["+15550000002".into()],
+            }],
+            ..cfg()
+        };
+        let mut app = App::new(&cfg);
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        three_chats(&mut app, now);
+        assert_eq!(app.chats.len(), 3);
+        assert_eq!(
+            app.chats.iter().find(|c| c.chat_id == 2).unwrap().display,
+            "Alex"
+        );
+    }
+
+    #[test]
+    fn sibling_echo_confirms_and_hints() {
+        let now = Instant::now();
+        let mut app = App::new(&cfg());
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        three_chats(&mut app, now);
+        // Open the phone chat (chat 1).
+        app.selected = app.chats.iter().position(|c| c.chat_id == 1).unwrap();
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        app.on_paste("hello");
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 3, true, "hello"),
+            }),
+            now,
+        );
+        assert!(
+            app.pending.is_empty(),
+            "copy under the email row counts as sent"
+        );
+        let hint = &app.flash.as_ref().unwrap().0;
+        assert!(
+            hint.contains("[[person]]")
+                && hint.contains("+15550000001")
+                && hint.contains("friend@example.com"),
+            "{hint}"
+        );
+
+        // A group chat never counts as a sibling.
+        app.on_paste("again");
+        app.on_key(key(KeyCode::Enter), now);
+        let mut group = chat(7, "+15550000005", msg(1, 7, false, "x"));
+        group.is_group = true;
+        group.handles.push("+15550000006".into());
+        app.chats.push(group);
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(21, 7, true, "again"),
+            }),
+            now,
+        );
+        assert_eq!(app.pending.len(), 1);
+    }
+
+    #[test]
+    fn echo_in_unlisted_chat_is_retried_after_refresh() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now); // chat 1
+        requests(&mut app);
+        app.on_paste("yo");
+        app.on_key(key(KeyCode::Enter), now);
+        requests(&mut app);
+        // Messages created a new row for the same person (e.g. an SMS row).
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(30, 9, true, "yo"),
+            }),
+            now,
+        );
+        assert_eq!(app.pending.len(), 1);
+        app.tick(now);
+        let reqs = requests(&mut app);
+        assert_eq!(reqs.len(), 2);
+        let mut sms = chat(9, "+15550000001", msg(30, 9, true, "yo"));
+        sms.guid = "SMS;-;+15550000001".into();
+        sms.service = "SMS".into();
+        let chats = vec![chat(1, "+15550000001", msg(10, 1, false, "hi")), sms];
+        app.on_line(
+            &line(&Response {
+                id: list_id(&reqs),
+                chats: Some(chats),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert!(app.pending.is_empty());
+        assert!(app.flash.as_ref().unwrap().0.contains("[[person]]"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -19,12 +19,20 @@ pub enum Command {
     },
     History {
         chat_id: i64,
+        /// Further chat rows shown together with `chat_id` (the same person's other handles).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        chat_ids: Vec<i64>,
         #[serde(default)]
         before_rowid: Option<i64>,
         limit: u32,
     },
     Since {
         rowid: i64,
+    },
+    /// Which handles belong to one person, from the Mac's Contacts.
+    People {
+        #[serde(default)]
+        names: bool,
     },
     Send {
         #[serde(default)]
@@ -42,6 +50,8 @@ pub struct Response {
     pub chats: Option<Vec<Chat>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<Message>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub people: Option<Vec<PersonGroup>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +96,14 @@ pub fn parse_server_line(line: &str) -> Result<ServerMsg, serde_json::Error> {
     }
 }
 
+/// chat.db handles that one Contacts card (or set of linked cards) covers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonGroup {
+    pub handles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chat {
     pub chat_id: i64,
@@ -97,6 +115,9 @@ pub struct Chat {
     pub handles: Vec<String>,
     pub unread: u32,
     pub last: Option<Message>,
+    /// Other chat rows the TUI merged into this one; the bridge leaves it empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

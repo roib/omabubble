@@ -91,6 +91,30 @@ bell = false
 
 Then run `imsg`, or `imsg <host>` to override the configured host.
 
+### One person, several handles
+
+`chat.db` keeps a separate chat row per handle, so a contact you message by
+both phone number and email has two rows, and Messages may file your sent copy
+under either. Messages.app shows them as one conversation by consulting
+Contacts, and the bridge does the same: it reads each card's phone numbers,
+email addresses and link id from `~/Library/Application Support/AddressBook/`
+(covered by the Full Disk Access grant), matches them against the handles in
+`chat.db`, and tells the TUI which handles belong to one person. Only those
+groupings cross the wire; names are included only with `names = true`.
+
+For someone Contacts doesn't link, add an override:
+
+```toml
+[[person]]
+name = "Alex"            # optional: shown instead of the handles
+handles = ["+15551234567", "alex@example.com"]
+```
+
+If a sent copy still lands in a sibling chat that isn't merged, the TUI counts
+it as sent and shows a hint naming the two handles. `imsg-bridge serve
+--no-contacts` turns the Contacts lookup off, and `imsg-bridge query people`
+prints only counts.
+
 ## Keys
 
 | Where | Key | Action |

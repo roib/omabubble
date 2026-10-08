@@ -162,6 +162,17 @@ impl Db {
         })
     }
 
+    /// Every handle id (phone number or email) chat.db knows.
+    pub fn handle_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT DISTINCT id FROM handle ORDER BY id")?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
     pub fn max_rowid(&self) -> Result<i64> {
         Ok(self
             .conn
@@ -223,6 +234,7 @@ impl Db {
                 handles,
                 unread,
                 last,
+                chat_ids: Vec::new(),
             });
         }
         Ok(chats)
@@ -231,16 +243,25 @@ impl Db {
     /// Up to `limit` messages of a chat older than `before_rowid`, oldest first.
     pub fn history(
         &self,
-        chat_id: i64,
+        chat_ids: &[i64],
         before_rowid: Option<i64>,
         limit: u32,
     ) -> Result<Vec<Message>> {
+        if chat_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Integers only, so inlining the list is safe.
+        let ids = chat_ids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let mut msgs = self.query_messages(
             &format!(
-                "WHERE cmj.chat_id = ?1 AND (?2 IS NULL OR m.ROWID < ?2) AND {VISIBLE} \
-                 ORDER BY m.ROWID DESC LIMIT ?3"
+                "WHERE cmj.chat_id IN ({ids}) AND (?1 IS NULL OR m.ROWID < ?1) AND {VISIBLE} \
+                 ORDER BY m.ROWID DESC LIMIT ?2"
             ),
-            params![chat_id, before_rowid, limit],
+            params![before_rowid, limit],
         )?;
         msgs.reverse();
         Ok(msgs)
@@ -639,7 +660,7 @@ pub mod tests {
     #[test]
     fn reads_history() {
         let db = Db::open(&fixture_db()).unwrap();
-        let h = db.history(1, None, 50).unwrap();
+        let h = db.history(&[1], None, 50).unwrap();
         assert_eq!(
             h.iter().map(|m| m.rowid).collect::<Vec<_>>(),
             (1..=9).collect::<Vec<_>>()
@@ -660,26 +681,34 @@ pub mod tests {
         assert_eq!(h[0].sender.as_deref(), Some("+15550000001"));
         assert_eq!(h[0].ts, 1_791_369_060);
 
-        let older = db.history(1, Some(4), 2).unwrap();
+        let older = db.history(&[1], Some(4), 2).unwrap();
         assert_eq!(
             older.iter().map(|m| m.rowid).collect::<Vec<_>>(),
             vec![2, 3]
         );
 
-        let failed = db.history(2, None, 50).unwrap();
+        let failed = db.history(&[2], None, 50).unwrap();
         assert!(failed[1].is_error && failed[1].from_me);
 
-        let att = &db.history(4, None, 50).unwrap()[0];
+        let att = &db.history(&[4], None, 50).unwrap()[0];
         assert_eq!(att.kind, Kind::Attachment);
         assert_eq!(att.text, "");
         assert_eq!(att.attachments[0].name, "IMG_1234.heic");
         assert_eq!(att.attachments[0].mime.as_deref(), Some("image/heic"));
 
-        let group = db.history(3, None, 50).unwrap();
+        let group = db.history(&[3], None, 50).unwrap();
         assert_eq!(
             group.iter().map(|m| m.rowid).collect::<Vec<_>>(),
             vec![12, 13, 14, 15]
         );
+
+        // Several chat rows (one person with two handles) read as one timeline.
+        let merged = db.history(&[1, 2], Some(12), 4).unwrap();
+        assert_eq!(
+            merged.iter().map(|m| m.rowid).collect::<Vec<_>>(),
+            vec![8, 9, 10, 11]
+        );
+        assert!(db.history(&[], None, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -703,6 +732,7 @@ pub mod tests {
     fn since_and_changes() {
         let db = Db::open(&fixture_db()).unwrap();
         assert_eq!(db.max_rowid().unwrap(), 19);
+        assert_eq!(db.handle_ids().unwrap().len(), 5);
         let s = db.since(14, 100).unwrap();
         assert_eq!(
             s.iter().map(|m| m.rowid).collect::<Vec<_>>(),

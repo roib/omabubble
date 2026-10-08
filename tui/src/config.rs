@@ -17,6 +17,20 @@ pub struct Config {
     pub country_code: String,
     pub notifications: bool,
     pub bell: bool,
+    /// Show Contacts names instead of handles.
+    pub names: bool,
+    /// Overrides for people the Mac's Contacts doesn't link; their chats are shown as one.
+    #[serde(rename = "person")]
+    pub people: Vec<Person>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Person {
+    /// Shown instead of the handles when set.
+    #[serde(default)]
+    pub name: Option<String>,
+    pub handles: Vec<String>,
 }
 
 impl Default for Config {
@@ -29,6 +43,8 @@ impl Default for Config {
             country_code: "1".into(),
             notifications: true,
             bell: false,
+            names: false,
+            people: Vec::new(),
         }
     }
 }
@@ -49,6 +65,16 @@ country_code = "1"
 
 notifications = true
 bell = false
+
+# The bridge uses the Mac's Contacts to show one conversation per person, even
+# when chat.db has separate chats for their phone number and email. Set this to
+# show their Contacts name instead of the handles.
+names = false
+
+# Override for someone Contacts doesn't link:
+# [[person]]
+# name = "Alex"            # optional: shown instead of the handles
+# handles = ["+15551234567", "alex@example.com"]
 "#;
 
 pub fn default_path() -> Result<PathBuf> {
@@ -76,5 +102,12 @@ mod tests {
         assert_eq!(c.host, "mac-imsg");
         assert_eq!(c.country_code, "1");
         assert!(c.notifications && !c.bell && c.remote_command.is_none());
+        let with_person: super::Config = toml::from_str(&format!(
+            "{}\n[[person]]\nname = \"Alex\"\nhandles = [\"+15551234567\", \"alex@example.com\"]\n",
+            super::SAMPLE
+        ))
+        .unwrap();
+        assert_eq!(with_person.people.len(), 1);
+        assert_eq!(with_person.people[0].name.as_deref(), Some("Alex"));
     }
 }
