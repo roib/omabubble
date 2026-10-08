@@ -1,0 +1,19 @@
+[package]
+name = "bridge"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "imsg-bridge"
+path = "src/main.rs"
+
+[dependencies]
+proto = { path = "../proto" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+notify = "8"
+libc = "0.2"
