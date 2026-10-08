@@ -166,9 +166,10 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
 | time | Confirmed: the message is in chat.db |
 | `✗ failed` | osascript failed, or Messages marked it with an error |
 | `? unconfirmed` | No echo after 30s, or the connection dropped mid-send |
-| `Delivered` / `Read 10:42` | Shown under your latest message in the open chat, from chat.db's receipts; `Read` needs the other person to share read receipts |
-| `Sent as Text Message` | Your latest message went over SMS; text messages are green, iMessages blue |
-| `Not Delivered` | Messages accepted the send but reported a failure later; the status bar flashes once, and the chat list shows `✗` |
+| `10:42 ✓` / `10:42 ✓✓` | After the time on every message you sent: delivered / read (`Read` needs the other person to share read receipts) |
+| `10:42 SMS` | Went over SMS; text messages are green, iMessages blue |
+| `10:42 ✗` | Messages accepted the send but reported a failure later; the status bar flashes once, and the chat list shows `✗` |
+| `Delivered` / `Read 10:44` / `Sent as Text Message` / `Not Delivered` | Spelled out under your latest message only |
 
 ## Limitations
 

@@ -259,7 +259,6 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
             Item::Msg(m) if m.from_me => outgoing(
                 &mut lines,
                 width,
-                m.ts,
                 &body(m),
                 status_of_msg(m),
                 m.edited,
@@ -273,17 +272,17 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                 incoming(&mut lines, width, m, who)
             }
             Item::Pending(p) => {
-                let status = match &p.state {
-                    PendState::Sending => ("sending…".to_string(), Style::new().dark_gray()),
-                    PendState::Failed(_) => ("✗ failed".to_string(), Style::new().red()),
-                    PendState::Unconfirmed => ("? unconfirmed".to_string(), Style::new().yellow()),
+                let (word, style) = match &p.state {
+                    PendState::Sending => ("sending…", Style::new().dark_gray()),
+                    PendState::Failed(_) => ("✗ failed", Style::new().red()),
+                    PendState::Unconfirmed => ("? unconfirmed", Style::new().yellow()),
                 };
+                let status = vec![Span::styled(word, style)];
                 outgoing(
                     &mut lines,
                     width,
-                    p.ts,
                     &Body::Text(p.text.clone(), vec![]),
-                    Some(status),
+                    status,
                     false,
                     false,
                 );
@@ -352,22 +351,40 @@ fn receipt(m: &Message) -> Option<String> {
     }
 }
 
-fn status_of_msg(m: &Message) -> Option<(String, Style)> {
-    m.is_error
-        .then(|| ("✗ failed".to_string(), Style::new().red()))
+/// Compact per-message marker after the time: ✗ not delivered, SMS text
+/// message, ✓ delivered, ✓✓ read; nothing while only sent.
+fn marker(m: &Message) -> Option<(&'static str, Style)> {
+    if m.is_error {
+        Some(("✗", Style::new().red()))
+    } else if m.service == "SMS" {
+        Some(("SMS", Style::new().green()))
+    } else if m.read.is_some() {
+        Some(("✓✓", Style::new().fg(Color::LightBlue)))
+    } else if m.delivered.is_some() {
+        Some(("✓", Style::new().dark_gray()))
+    } else {
+        None
+    }
+}
+
+fn status_of_msg(m: &Message) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(hhmm(m.ts), Style::new().dark_gray())];
+    if let Some((mark, style)) = marker(m) {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(mark, style));
+    }
+    spans
 }
 
 fn outgoing(
     lines: &mut Vec<Line<'static>>,
     width: usize,
-    ts: i64,
     body: &Body,
-    status: Option<(String, Style)>,
+    status: Vec<Span<'static>>,
     edited: bool,
     sms: bool,
 ) {
-    let (status, status_style) = status.unwrap_or_else(|| (hhmm(ts), Style::new().dark_gray()));
-    let status_w = status.width() + 2;
+    let status_w: usize = status.iter().map(|s| s.content.width()).sum::<usize>() + 2;
     let max_w = (width * 3 / 4).max(20).min(width);
     let edited_w = if edited { " (edited)".width() } else { 0 };
     let text_w = max_w.saturating_sub(status_w + edited_w).max(1);
@@ -401,7 +418,7 @@ fn outgoing(
                 spans.push(Span::styled(" (edited)", Style::new().dark_gray()));
             }
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(status.clone(), status_style));
+            spans.extend(status.iter().cloned());
         } else {
             spans.push(Span::raw(" ".repeat(status_w)));
         }
@@ -750,6 +767,41 @@ mod tests {
     }
 
     #[test]
+    fn markers_follow_delivery_state() {
+        let mut m = Message {
+            rowid: 1,
+            chat_id: 1,
+            sender: None,
+            from_me: true,
+            text: "x".into(),
+            ts: 0,
+            service: "iMessage".into(),
+            is_error: false,
+            edited: false,
+            unsent: false,
+            delivered: None,
+            read: None,
+            kind: Kind::Text,
+            attachments: vec![],
+            tapback: None,
+        };
+        assert_eq!(marker(&m), None, "sent, no receipt yet");
+        m.delivered = Some(1);
+        assert_eq!(marker(&m).map(|(s, _)| s), Some("✓"));
+        m.read = Some(2);
+        assert_eq!(marker(&m).map(|(s, _)| s), Some("✓✓"));
+        m.service = "SMS".into();
+        assert_eq!(marker(&m).map(|(s, _)| s), Some("SMS"));
+        m.is_error = true;
+        assert_eq!(marker(&m).map(|(s, _)| s), Some("✗"));
+        let line_text: String = status_of_msg(&m)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(line_text.ends_with(" ✗"));
+    }
+
+    #[test]
     fn truncates_wide_chars() {
         assert_eq!(truncate("héllo wörld", 6), "héllo…");
         assert_eq!(truncate("😀😀😀", 5), "😀😀…");
@@ -762,9 +814,8 @@ mod tests {
         outgoing(
             &mut lines,
             40,
-            0,
             &Body::Text("🙌 ".repeat(20), vec![]),
-            None,
+            vec![Span::raw("10:00")],
             true,
             false,
         );
