@@ -5,6 +5,14 @@ Messages runs **`imsg-bridge`**. The Linux TUI **`imsg`** talks to it over SSH.
 Chats show Contacts names when the Mac has them, otherwise bare phone numbers
 and emails; `names = false` in the config shows handles only.
 
+![A conversation: chat list on the left, messages with a reaction and read receipts on the right](docs/screenshots/chat.webp)
+
+![A group chat with senders named from Contacts](docs/screenshots/group.webp)
+
+The screenshots use made-up demo data. `scripts/demo/run.sh` runs imsg against
+that data with a local bridge, so no Mac is needed (sends are dry runs);
+`scripts/demo/screenshots.sh` regenerates the images.
+
 ```
 imsg (Linux) ──ssh, restricted key──> imsg-bridge connect ──unix socket──> imsg-bridge serve (LaunchAgent)
                                                                              ├─ reads ~/Library/Messages/chat.db (read-only)
@@ -94,6 +102,7 @@ host = "mac-imsg"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
 notifications = true    # notify-send for messages in chats you aren't looking at; on Hyprland, clicking one opens the chat in imsg's window
 notification_detail = true  # false: notifications say only "New message" (see Security)
+notification_seconds = 20   # how long banners stay up; 0 = until dismissed (Omarchy allows 8–30)
 bell = false
 # ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
 # remote_command = "/usr/local/bin/imsg-bridge connect"       # only for keys without a forced command
