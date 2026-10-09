@@ -51,7 +51,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn border(focused: bool) -> Style {
     if focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(Color::LightBlue)
     } else {
         Style::new().fg(Color::DarkGray)
     }
@@ -177,7 +177,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             " SELECT "
         };
-        block = block.title_top(Line::from(mode.black().on_cyan()).right_aligned());
+        block = block.title_top(Line::from(mode.black().on_light_blue()).right_aligned());
     }
     let inner = block.inner(area);
     app.rects.messages = inner;
@@ -672,7 +672,7 @@ fn draw_popup(f: &mut Frame, app: &App) {
     f.render_widget(Clear, rect);
     let block = Block::bordered()
         .title(" New conversation ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(Color::LightBlue));
     let inner = block.inner(rect);
     let field_w = (inner.width as usize).saturating_sub(10);
     let tail = |s: &str| {
@@ -694,7 +694,7 @@ fn draw_popup(f: &mut Frame, app: &App) {
     };
     let label = |i: usize, s: &'static str| {
         if p.field == i {
-            s.cyan().bold()
+            s.light_blue().bold()
         } else {
             s.into()
         }
@@ -760,7 +760,7 @@ fn draw_emoji_inline(f: &mut Frame, app: &App, input_area: Rect) {
         height: h,
     };
     f.render_widget(Clear, rect);
-    let block = Block::bordered().border_style(Style::new().fg(Color::Cyan));
+    let block = Block::bordered().border_style(Style::new().fg(Color::LightBlue));
     f.render_widget(Paragraph::new(rows).block(block), rect);
 }
 
@@ -769,7 +769,10 @@ fn draw_emoji_picker(f: &mut Frame, app: &App) {
     let area = f.area();
     let recent = p.query.is_empty() && !app.recents.is_empty();
     let mut lines = vec![
-        Line::from(vec!["Search: ".cyan().bold(), Span::raw(p.query.clone())]),
+        Line::from(vec![
+            "Search: ".light_blue().bold(),
+            Span::raw(p.query.clone()),
+        ]),
         Line::from(""),
     ];
     if recent {
@@ -791,7 +794,7 @@ fn draw_emoji_picker(f: &mut Frame, app: &App) {
     f.render_widget(Clear, rect);
     let block = Block::bordered()
         .title(" Emoji ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(Color::LightBlue));
     let inner = block.inner(rect);
     f.render_widget(Paragraph::new(lines).block(block), rect);
     f.set_cursor_position((inner.x + 8 + p.query.width() as u16, inner.y));
