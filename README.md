@@ -92,7 +92,7 @@ both windows for you:
 ```toml
 host = "mac-imsg"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
-notifications = true    # notify-send for messages in chats you don't have open
+notifications = true    # notify-send for messages in chats you aren't looking at; on Hyprland, clicking one opens the chat in imsg's window
 notification_detail = true  # false: notifications say only "New message" (see Security)
 bell = false
 # ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
@@ -135,6 +135,7 @@ prints only counts.
 | Chat list | `j`/`k`, arrows, `g`/`G` | Move |
 | | `Enter` | Open chat |
 | | `n` | New conversation (number or email) |
+| | `d` / `Delete` | Hide the chat on this machine until a new message arrives (the Mac and phone keep it); `u` undoes the last hide |
 | Anywhere | `Tab` / `Shift-Tab` | Cycle focus: list → messages → input |
 | | `PgUp` / `PgDn` | Scroll; at the top, older history loads |
 | | `q` (outside the input), `Ctrl-C` | Quit |

@@ -12,10 +12,11 @@ use app::{App, Effect};
 use clap::Parser;
 use conn::{Conn, ConnEvent};
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyEventKind,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyEventKind,
 };
 use ratatui::crossterm::execute;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -37,6 +38,8 @@ struct Cli {
 enum AppEvent {
     Term(Event),
     Conn(conn::Tagged),
+    /// A desktop notification for this chat was clicked.
+    NotifyClicked(i64),
 }
 
 fn main() -> Result<()> {
@@ -64,7 +67,8 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableBracketedPaste)?;
+    // Focus reports tell a chat open on another workspace from one being read.
+    execute!(std::io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
     if cfg.mouse {
         execute!(std::io::stdout(), EnableMouseCapture)?;
     }
@@ -72,7 +76,7 @@ fn main() -> Result<()> {
     if cfg.mouse {
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
     }
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = execute!(std::io::stdout(), DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -104,6 +108,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
 
     let mut app = App::new(cfg);
     app.recents = load_recents();
+    app.hidden = load_hidden();
     let mut conn = Conn::default();
     let start = |conn: &mut Conn, app: &mut App| {
         app.on_connecting();
@@ -112,6 +117,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
         }
     };
     start(&mut conn, &mut app);
+    // Our terminal window, so a clicked notification can bring it forward.
+    // Just launched, it is almost certainly the focused one; focus reports refresh it.
+    let mut window = notify::active_window();
 
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -133,10 +141,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 }
                 AppEvent::Term(Event::Paste(s)) => app.on_paste(&s),
                 AppEvent::Term(Event::Mouse(m)) => app.on_mouse(m, now),
+                AppEvent::Term(Event::FocusGained) => {
+                    window = notify::active_window().or(window.take());
+                    app.on_focus(true)
+                }
+                AppEvent::Term(Event::FocusLost) => app.on_focus(false),
                 AppEvent::Term(_) => {}
                 AppEvent::Conn((generation, _)) if generation != conn.generation => {}
                 AppEvent::Conn((_, ConnEvent::Line(line))) => app.on_line(&line, now),
                 AppEvent::Conn((_, ConnEvent::Closed(reason))) => app.on_closed(reason, now),
+                AppEvent::NotifyClicked(chat_id) => {
+                    if let Some(w) = &window {
+                        notify::focus_window(w);
+                    }
+                    app.on_notify_click(chat_id, now);
+                }
             }
         }
         app.tick(Instant::now());
@@ -147,12 +166,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                     // A failed write shows up as a Closed event from the reader.
                     conn.send(&serde_json::to_string(&req)?);
                 }
-                Effect::Notify { title, body } => notify::desktop(&title, &body),
+                Effect::Notify {
+                    title,
+                    body,
+                    chat_id,
+                } => {
+                    let tx = tx.clone();
+                    notify::desktop(&title, &body, move || {
+                        let _ = tx.send(AppEvent::NotifyClicked(chat_id));
+                    });
+                }
                 Effect::Bell => notify::bell(),
                 Effect::Copy(text) => clipboard::copy(&text),
                 Effect::Reconnect => start(&mut conn, &mut app),
                 Effect::Disconnect => conn.stop(),
                 Effect::SaveRecents(recents) => save_recents(&recents),
+                Effect::SaveHidden(hidden) => save_hidden(&hidden),
             }
         }
         if app.quit {
@@ -165,6 +194,36 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
 
 fn recents_path() -> Option<PathBuf> {
     dirs::state_dir().map(|d| d.join("imsg/recent_emoji"))
+}
+
+/// One `chat_id rowid` pair per line.
+fn hidden_path() -> Option<PathBuf> {
+    dirs::state_dir().map(|d| d.join("imsg/hidden_chats"))
+}
+
+fn load_hidden() -> HashMap<i64, i64> {
+    hidden_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| {
+                    let (id, rowid) = l.split_once(' ')?;
+                    Some((id.parse().ok()?, rowid.parse().ok()?))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_hidden(hidden: &HashMap<i64, i64>) {
+    if let Some(path) = hidden_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut lines: Vec<String> = hidden.iter().map(|(id, r)| format!("{id} {r}")).collect();
+        lines.sort();
+        let _ = std::fs::write(path, lines.join("\n"));
+    }
 }
 
 fn load_recents() -> Vec<String> {

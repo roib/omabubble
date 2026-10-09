@@ -37,6 +37,8 @@ pub enum Effect {
     Notify {
         title: String,
         body: String,
+        /// The chat to open if the notification is clicked.
+        chat_id: i64,
     },
     Bell,
     Copy(String),
@@ -44,6 +46,7 @@ pub enum Effect {
     Disconnect,
     /// Persist recently used emojis.
     SaveRecents(Vec<String>),
+    SaveHidden(HashMap<i64, i64>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +212,11 @@ pub struct App {
     emoji_dismissed: Option<usize>,
     /// Most recently used first.
     pub recents: Vec<String>,
+    /// Chat rows hidden on this machine → newest rowid when hidden; a newer
+    /// message brings the chat back.
+    pub hidden: HashMap<i64, i64>,
+    /// The chat rows the last hide covered, for `u`.
+    last_hidden: Option<Vec<i64>>,
 
     pub status: Status,
     backoff: Duration,
@@ -230,6 +238,9 @@ pub struct App {
 
     pub effects: Vec<Effect>,
     pub quit: bool,
+    /// Whether the terminal window has focus; terminals without focus
+    /// reporting never say otherwise, so this starts true.
+    focused: bool,
     pub rects: Rects,
     /// Owned here so the list's scroll offset is known for clicks.
     pub list_state: ListState,
@@ -264,6 +275,8 @@ impl App {
             emoji: None,
             emoji_dismissed: None,
             recents: Vec::new(),
+            hidden: HashMap::new(),
+            last_hidden: None,
             status: Status::Connecting,
             backoff: FIRST_BACKOFF,
             last_bridge_error: None,
@@ -279,6 +292,7 @@ impl App {
             unmatched: Vec::new(),
             effects: Vec::new(),
             quit: false,
+            focused: true,
             rects: Rects::default(),
             list_state: ListState::default(),
         }
@@ -404,9 +418,7 @@ impl App {
             return;
         }
         let chat_ids = match self.chats.iter().find(|c| c.chat_id == chat_id) {
-            Some(c) => std::iter::once(c.chat_id)
-                .chain(c.chat_ids.iter().copied())
-                .collect(),
+            Some(c) => chat_rows(c),
             None => vec![chat_id],
         };
         if self.request(Command::MarkRead { chat_ids, rowid }, ReqKind::MarkRead) {
@@ -536,6 +548,11 @@ impl App {
             .unwrap_or(0);
     }
 
+    /// The open chat, if the window has focus so the user can actually see it.
+    fn viewing_chat_id(&self) -> Option<i64> {
+        self.open_chat_id().filter(|_| self.focused)
+    }
+
     fn open_chat_id(&self) -> Option<i64> {
         match &self.view {
             Some(View {
@@ -630,7 +647,7 @@ impl App {
     fn set_chats(&mut self, chats: Vec<Chat>, now: Instant) {
         self.raw_chats = chats.clone();
         let mut chats = self.merge_chats(chats);
-        let open = self.open_chat_id();
+        let open = self.viewing_chat_id();
         for c in &mut chats {
             let last = c.last.as_ref().map_or(0, |m| m.rowid);
             if open == Some(c.chat_id)
@@ -646,6 +663,24 @@ impl App {
             }
         }
         self.loaded_once = true;
+        let before = self.hidden.len();
+        chats.retain(|c| {
+            let ids = chat_rows(c);
+            let last = c.last.as_ref().map_or(0, |m| m.rowid);
+            let mark = ids.iter().filter_map(|id| self.hidden.get(id)).max();
+            match mark {
+                Some(&m) if last <= m => false,
+                Some(_) => {
+                    // Back for good: a newer message arrived.
+                    self.hidden.retain(|id, _| !ids.contains(id));
+                    true
+                }
+                None => true,
+            }
+        });
+        if self.hidden.len() != before {
+            self.effects.push(Effect::SaveHidden(self.hidden.clone()));
+        }
         // Resolve the old selection only after sorting, so a first load (no
         // selection yet) lands on the newest chat rather than an arbitrary one.
         let sel = self.selected_chat_id();
@@ -721,7 +756,9 @@ impl App {
             v.appended = true;
         }
         v.messages.sort_by_key(|m| (m.ts, m.rowid));
-        if let Some(last) = v.messages.last().map(|m| m.rowid) {
+        if let Some(last) = v.messages.last().map(|m| m.rowid)
+            && self.focused
+        {
             self.mark_read(chat_id, last);
         }
         self.clamp_sel();
@@ -733,7 +770,7 @@ impl App {
         }
         let raw_chat = m.chat_id;
         m.chat_id = self.primary_id(raw_chat);
-        let open_here = self.open_chat_id() == Some(m.chat_id);
+        let open_here = self.viewing_chat_id() == Some(m.chat_id);
 
         // Messages reports some failures only after accepting the send; the
         // watcher pushes each state change once, so this fires once per failure.
@@ -821,7 +858,11 @@ impl App {
                 } else {
                     ("imsg".to_string(), "New message".to_string())
                 };
-                self.effects.push(Effect::Notify { title, body });
+                self.effects.push(Effect::Notify {
+                    title,
+                    body,
+                    chat_id: m.chat_id,
+                });
             }
             if self.bell {
                 self.effects.push(Effect::Bell);
@@ -1177,6 +1218,39 @@ impl App {
         }
     }
 
+    /// A notification for `chat_id` was clicked: open that chat.
+    pub fn on_notify_click(&mut self, chat_id: i64, now: Instant) {
+        let id = self.primary_id(chat_id);
+        let Some(i) = self.chats.iter().position(|c| c.chat_id == id) else {
+            return;
+        };
+        self.popup = None;
+        self.emoji = None;
+        self.selected = i;
+        self.open_selected(now);
+    }
+
+    /// The terminal window gained or lost focus (e.g. another workspace).
+    pub fn on_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        let Some(id) = self.viewing_chat_id() else {
+            return;
+        };
+        // Coming back counts as reading what arrived meanwhile.
+        let mut last = self
+            .view
+            .as_ref()
+            .and_then(|v| v.messages.last())
+            .map_or(0, |m| m.rowid);
+        if let Some(c) = self.chats.iter_mut().find(|c| c.chat_id == id) {
+            c.unread = 0;
+            last = last.max(c.last.as_ref().map_or(0, |m| m.rowid));
+        }
+        if last > 0 {
+            self.mark_read(id, last);
+        }
+    }
+
     pub fn on_paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if let Some(p) = &mut self.popup {
@@ -1383,10 +1457,50 @@ impl App {
             KeyCode::Char('g') | KeyCode::Home => self.selected = 0,
             KeyCode::Char('G') | KeyCode::End => self.selected = n.saturating_sub(1),
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_selected(now),
+            KeyCode::Char('d') | KeyCode::Delete => self.hide_selected(now),
+            KeyCode::Char('u') => self.unhide_last(now),
             _ => {
                 self.global_key(key, now);
             }
         }
+    }
+
+    /// Hides the selected chat on this machine until a newer message arrives.
+    /// Nothing changes on the Mac.
+    fn hide_selected(&mut self, now: Instant) {
+        let Some(c) = self.chats.get(self.selected) else {
+            return;
+        };
+        let (id, ids, display) = (c.chat_id, chat_rows(c), c.display.clone());
+        let last = c.last.as_ref().map_or(0, |m| m.rowid);
+        // When it comes back, only what's new should count as unread.
+        self.mark_read(id, last);
+        for &row in &ids {
+            self.hidden.insert(row, last);
+        }
+        self.effects.push(Effect::SaveHidden(self.hidden.clone()));
+        self.last_hidden = Some(ids);
+        self.chats.remove(self.selected);
+        self.selected = self.selected.min(self.chats.len().saturating_sub(1));
+        if self.open_chat_id() == Some(id) {
+            self.view = None;
+        }
+        self.hint(format!("hid {display} until a new message; u to undo"), now);
+    }
+
+    fn unhide_last(&mut self, now: Instant) {
+        let Some(ids) = self.last_hidden.take() else {
+            return;
+        };
+        self.hidden.retain(|id, _| !ids.contains(id));
+        self.effects.push(Effect::SaveHidden(self.hidden.clone()));
+        let raw = self.raw_chats.clone();
+        self.set_chats(raw, now);
+        if let Some(id) = ids.first() {
+            let id = self.primary_id(*id);
+            self.select_id(Some(id));
+        }
+        self.flash_msg("chat restored", now);
     }
 
     fn messages_key(&mut self, key: KeyEvent, now: Instant) {
@@ -1538,6 +1652,13 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Every chat row a (possibly merged) list entry stands for.
+fn chat_rows(c: &Chat) -> Vec<i64> {
+    std::iter::once(c.chat_id)
+        .chain(c.chat_ids.iter().copied())
+        .collect()
 }
 
 /// Fold chat row `b` into `a`; the newer row's id, guid and service win.
@@ -1967,6 +2088,148 @@ mod tests {
     }
 
     #[test]
+    fn open_chat_counts_as_unread_while_unfocused() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now);
+        app.effects.clear();
+        let has_mark = |app: &mut App| {
+            all_requests(app)
+                .iter()
+                .any(|(_, c)| matches!(c, Command::MarkRead { .. }))
+        };
+
+        // On another workspace: the open chat notifies and stays unread.
+        app.on_focus(false);
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(11, 1, false, "psst"),
+            }),
+            now,
+        );
+        let c1 = app.chats.iter().find(|c| c.chat_id == 1).unwrap();
+        assert_eq!(c1.unread, 1);
+        assert!(
+            app.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Notify { body, .. } if body == "psst"))
+        );
+        assert!(!has_mark(&mut app), "not read while away");
+
+        // Back again: it's read.
+        app.effects.clear();
+        app.on_focus(true);
+        let c1 = app.chats.iter().find(|c| c.chat_id == 1).unwrap();
+        assert_eq!(c1.unread, 0);
+        assert!(matches!(
+            &all_requests(&mut app)[..],
+            [(_, Command::MarkRead { rowid: 11, .. })]
+        ));
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(12, 1, false, "seen"),
+            }),
+            now,
+        );
+        assert!(
+            !app.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Notify { .. })),
+            "focused and open: no notification"
+        );
+    }
+
+    #[test]
+    fn hidden_chat_comes_back_with_a_new_message() {
+        let (mut app, now) = connected();
+        let ids = |app: &App| app.chats.iter().map(|c| c.chat_id).collect::<Vec<_>>();
+        let saved = |app: &mut App| {
+            app.effects.iter().rev().find_map(|e| match e {
+                Effect::SaveHidden(h) => Some(h.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(ids(&app), vec![1, 2]);
+
+        app.on_key(key(KeyCode::Char('d')), now);
+        assert_eq!(ids(&app), vec![2]);
+        assert_eq!(saved(&mut app), Some(HashMap::from([(1, 10)])));
+        assert!(
+            all_requests(&mut app)
+                .iter()
+                .any(|(_, c)| matches!(c, Command::MarkRead { rowid: 10, .. })),
+            "hiding marks it read"
+        );
+
+        app.on_key(key(KeyCode::Char('u')), now);
+        assert_eq!(ids(&app), vec![1, 2], "undo");
+        assert_eq!(app.chats[app.selected].chat_id, 1);
+        assert_eq!(saved(&mut app), Some(HashMap::new()));
+
+        // Hidden again, it stays hidden across a list refresh...
+        app.on_key(key(KeyCode::Char('d')), now);
+        app.effects.clear();
+        let list = |app: &mut App, last: i64| {
+            app.chats_dirty = true;
+            app.tick(now);
+            let reqs = requests(app);
+            app.on_line(
+                &line(&Response {
+                    id: list_id(&reqs),
+                    chats: Some(vec![
+                        chat(1, "+15550000001", msg(last, 1, false, "x")),
+                        chat(2, "+15550000002", msg(5, 2, false, "yo")),
+                    ]),
+                    ..Default::default()
+                }),
+                now,
+            );
+        };
+        list(&mut app, 10);
+        assert_eq!(ids(&app), vec![2]);
+
+        // ...until a new message arrives: it notifies and the chat is back.
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(11, 1, false, "spam again"),
+            }),
+            now,
+        );
+        assert!(
+            app.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Notify { body, .. } if body == "spam again"))
+        );
+        list(&mut app, 11);
+        assert_eq!(ids(&app), vec![1, 2]);
+        assert!(app.hidden.is_empty(), "its mark is dropped");
+    }
+
+    #[test]
+    fn clicking_a_notification_opens_its_chat() {
+        let (mut app, now) = connected();
+        app.on_focus(false);
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 2, false, "ping"),
+            }),
+            now,
+        );
+        let chat_id = app
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::Notify { chat_id, .. } => Some(*chat_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(chat_id, 2);
+        app.on_focus(true);
+        app.on_notify_click(chat_id, now);
+        assert_eq!(app.open_chat_id(), Some(2));
+        assert_eq!(app.chats[app.selected].chat_id, 2);
+    }
+
+    #[test]
     fn reconnect_catch_up_is_silent() {
         let (mut app, now) = connected();
         app.on_closed("Connection reset".into(), now);
@@ -2308,7 +2571,7 @@ mod tests {
             now,
         );
         assert!(app.effects.iter().any(
-            |e| matches!(e, Effect::Notify { body, title } if body == "New message" && title == "imsg")
+            |e| matches!(e, Effect::Notify { body, title, .. } if body == "New message" && title == "imsg")
         ));
     }
 

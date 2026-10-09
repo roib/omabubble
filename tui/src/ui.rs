@@ -78,7 +78,8 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .chats
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(i, c)| {
             let time = c
                 .last
                 .as_ref()
@@ -112,14 +113,40 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("  {}", truncate(&prev, inner_w.saturating_sub(2))),
                 Style::new().dark_gray(),
             ));
+            let (l1, l2) = if i == app.selected {
+                (lift_dim(l1), lift_dim(l2))
+            } else {
+                (l1, l2)
+            };
             ListItem::new(Text::from(vec![l1, l2]))
         })
         .collect();
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::new().bg(Color::DarkGray));
+        .highlight_style(Style::new().bg(SELECTED_BG));
     app.list_state.select(Some(app.selected));
     f.render_stateful_widget(list, area, &mut app.list_state);
+}
+
+/// Background for selected rows.
+const SELECTED_BG: Color = Color::DarkGray;
+
+/// Dim text is drawn in the selection colour, so on a selected row it would
+/// vanish; lighten it there.
+fn lift_dim(mut line: Line<'static>) -> Line<'static> {
+    if line.style.fg == Some(SELECTED_BG) {
+        line.style.fg = Some(Color::Gray);
+    }
+    for span in &mut line.spans {
+        if span.style.fg == Some(SELECTED_BG) {
+            span.style.fg = Some(Color::Gray);
+        }
+    }
+    line
+}
+
+fn highlight(line: Line<'static>) -> Line<'static> {
+    lift_dim(line).patch_style(Style::new().bg(SELECTED_BG))
 }
 
 // ------------------------------------------------------------------ messages
@@ -189,7 +216,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         };
         for (s, e) in ranges.iter().take(b + 1).skip(a) {
             for line in &mut lines[*s..*e] {
-                *line = std::mem::take(line).patch_style(Style::new().bg(Color::DarkGray));
+                *line = highlight(std::mem::take(line));
             }
         }
         if v.follow_sel
@@ -612,7 +639,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let hints = match (app.popup.is_some(), app.focus) {
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
-        (_, Focus::List) => "j/k move  Enter open  n new  Tab focus  q quit",
+        (_, Focus::List) => "j/k move  Enter open  n new  d hide  Tab focus  q quit",
         (_, Focus::Messages) => {
             if app.selected_pending_visible() {
                 "Enter resend  x discard  j/k select  y copy  Esc back"
@@ -709,11 +736,7 @@ fn emoji_rows(app: &App, with_names: bool) -> Vec<Line<'static>> {
                 Span::raw("  "),
                 Span::styled(label, Style::new().dark_gray()),
             ]);
-            if i == sel {
-                line.patch_style(Style::new().bg(Color::DarkGray))
-            } else {
-                line
-            }
+            if i == sel { highlight(line) } else { line }
         })
         .collect()
 }
@@ -836,6 +859,20 @@ mod tests {
         assert_eq!(cur, (1, 0));
         let (_, cur) = input_layout("abcd", 4, 4);
         assert_eq!(cur, (1, 0), "cursor after a full row moves down");
+    }
+
+    #[test]
+    fn selection_keeps_dim_text_readable() {
+        let line = Line::from(vec![
+            Span::raw("name"),
+            Span::styled("10:42", Style::new().dark_gray()),
+        ]);
+        let h = highlight(line);
+        assert_eq!(h.spans[0].style.fg, None);
+        assert_eq!(h.spans[1].style.fg, Some(Color::Gray));
+        assert_eq!(h.style.bg, Some(SELECTED_BG));
+        let whole = lift_dim(Line::from("preview").dark_gray());
+        assert_eq!(whole.style.fg, Some(Color::Gray));
     }
 
     #[test]
