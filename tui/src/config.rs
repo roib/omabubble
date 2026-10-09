@@ -18,6 +18,9 @@ pub struct Config {
     pub notifications: bool,
     /// Show who wrote and a preview in notifications. Off, they say only "New message".
     pub notification_detail: bool,
+    /// How long a notification banner stays up; 0 keeps it until dismissed.
+    /// Desktops may clamp it (Omarchy: 8–30 s).
+    pub notification_seconds: u32,
     pub bell: bool,
     /// Click chats and panes, scroll with the wheel. Hold Shift to drag-select text.
     pub mouse: bool,
@@ -47,6 +50,7 @@ impl Default for Config {
             country_code: "1".into(),
             notifications: true,
             notification_detail: true,
+            notification_seconds: 20,
             bell: false,
             mouse: true,
             names: true,
@@ -73,6 +77,8 @@ notifications = true
 # Desktops keep a notification history on disk. With this off, notifications
 # say only "New message": no sender, no preview.
 notification_detail = true
+# How long a banner stays up. 0: until you click or dismiss it.
+notification_seconds = 20
 bell = false
 
 # Click a chat to open it, click a pane to focus it, scroll with the wheel.

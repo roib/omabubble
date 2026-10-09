@@ -172,7 +172,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                     chat_id,
                 } => {
                     let tx = tx.clone();
-                    notify::desktop(&title, &body, move || {
+                    notify::desktop(&title, &body, cfg.notification_seconds, move || {
                         let _ = tx.send(AppEvent::NotifyClicked(chat_id));
                     });
                 }

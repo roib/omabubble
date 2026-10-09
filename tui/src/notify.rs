@@ -1,13 +1,23 @@
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-/// Shows a desktop notification; `on_click` runs if the user clicks it.
+/// Shows a desktop notification for `seconds` (0: until dismissed);
+/// `on_click` runs if the user clicks it.
 ///
 /// notify-send waits until the notification closes and prints the action
 /// that closed it; clicking the banner invokes the `default` action.
-pub fn desktop(title: &str, body: &str, on_click: impl FnOnce() + Send + 'static) {
-    if let Ok(mut child) = Command::new("notify-send")
-        .args(["-a", "imsg", "-A", "default=Open", title, body])
+pub fn desktop(title: &str, body: &str, seconds: u32, on_click: impl FnOnce() + Send + 'static) {
+    let mut cmd = Command::new("notify-send");
+    cmd.args(["-a", "imsg", "-A", "default=Open"]);
+    if seconds == 0 {
+        // Only critical notifications stay up indefinitely on most desktops.
+        cmd.args(["-u", "critical"]);
+    } else {
+        cmd.args(["-t", &seconds.saturating_mul(1000).to_string()]);
+    }
+    if let Ok(mut child) = cmd
+        // `--`: a message starting with "-" is text, not an option.
+        .args(["--", title, body])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
