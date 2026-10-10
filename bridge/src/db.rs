@@ -296,6 +296,24 @@ impl Db {
 
     /// Already-seen rows from the recent past that were edited, unsent, or failed.
     /// Bounded by ROWID range and date so it stays a small scan.
+    /// Chats whose incoming messages were read (on the phone, the Mac, or
+    /// any device syncing through iCloud) after `since_apple_ns`: (chat ROWID,
+    /// newest message ROWID read). Bounded by ROWID like `recent_changes`.
+    pub fn read_since(&self, floor_rowid: i64, since_apple_ns: i64) -> Result<Vec<(i64, i64)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT cmj.chat_id, MAX(m.ROWID) FROM message m \
+             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID \
+             WHERE m.ROWID > ?1 AND m.is_from_me = 0 AND m.is_read = 1 AND m.date_read > ?2 \
+             GROUP BY cmj.chat_id ORDER BY cmj.chat_id",
+        )?;
+        let rows = stmt
+            .query_map(params![floor_rowid, since_apple_ns], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     pub fn recent_changes(
         &self,
         floor_rowid: i64,

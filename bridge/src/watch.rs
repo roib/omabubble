@@ -46,7 +46,15 @@ pub struct Watch {
     last_seen: i64,
     /// rowid → (state last pushed, message ts) for recent rows.
     pushed: HashMap<i64, (Snapshot, i64)>,
+    /// Apple-epoch ns when the previous pass started: reads after this are new.
+    last_pass: i64,
+    /// chat ROWID → newest message announced as read elsewhere.
+    read_announced: HashMap<i64, i64>,
 }
+
+/// Overlap between passes when looking for reads, so one that lands while a
+/// pass runs is still caught; repeats are filtered by `read_announced`.
+const READ_SLACK_NS: i64 = 2_000_000_000;
 
 impl Watch {
     pub fn new(db: Db) -> Result<Watch> {
@@ -55,6 +63,9 @@ impl Watch {
             db,
             last_seen,
             pushed: HashMap::new(),
+            // Reads from before startup are already in the chat list's counts.
+            last_pass: crate::db::unix_to_apple_ns(now_unix()),
+            read_announced: HashMap::new(),
         })
     }
 
@@ -85,6 +96,25 @@ impl Watch {
             self.pushed.insert(m.rowid, (snap, m.ts));
             events.push(Event::MessageUpdated { message: m });
         }
+
+        // Chats read on the phone (or anywhere Messages syncs): tell every
+        // client, the same way a read in one imsg is shared with the others.
+        let pass_start = crate::db::unix_to_apple_ns(now);
+        for (chat_id, rowid) in self.db.read_since(floor, self.last_pass - READ_SLACK_NS)? {
+            if self
+                .read_announced
+                .get(&chat_id)
+                .is_some_and(|&r| r >= rowid)
+            {
+                continue;
+            }
+            self.read_announced.insert(chat_id, rowid);
+            events.push(Event::Read {
+                chat_ids: vec![chat_id],
+                rowid,
+            });
+        }
+        self.last_pass = pass_start;
 
         self.pushed
             .retain(|_, (_, ts)| *ts > now - CHANGE_WINDOW_SECS - 300);
@@ -232,5 +262,61 @@ mod tests {
         .unwrap();
         let ev = w.tick().unwrap();
         assert!(matches!(&ev[..], [Event::MessageUpdated { message }] if message.read.is_some()));
+    }
+
+    #[test]
+    fn reads_elsewhere_are_announced_once() {
+        let path = fixture_db();
+        let mut w = Watch::new(Db::open(&path).unwrap()).unwrap();
+        assert!(
+            w.tick().unwrap().is_empty(),
+            "earlier reads aren't replayed"
+        );
+
+        let rw = Connection::open(&path).unwrap();
+        rw.execute_batch(&format!(
+            "INSERT INTO message (ROWID, guid, text, handle_id, service, date, is_from_me, is_read) \
+               VALUES (50, 'G50', 'one', 1, 'iMessage', {d}, 0, 0), \
+                      (51, 'G51', 'two', 1, 'iMessage', {d}, 0, 0), \
+                      (52, 'G52', 'group', 2, 'iMessage', {d}, 0, 0);
+             INSERT INTO chat_message_join VALUES (1, 50, {d}), (1, 51, {d}), (3, 52, {d});",
+            d = ns_ago(30)
+        ))
+        .unwrap();
+        let ev = w.tick().unwrap();
+        assert_eq!(ev.len(), 3, "the three new messages");
+        assert!(ev.iter().all(|e| matches!(e, Event::NewMessage { .. })));
+
+        // Read on the phone: Messages sets is_read and date_read.
+        rw.execute(
+            &format!(
+                "UPDATE message SET is_read = 1, date_read = {} WHERE ROWID IN (50, 51, 52)",
+                ns_ago(0)
+            ),
+            [],
+        )
+        .unwrap();
+        let mut ev = w.tick().unwrap();
+        ev.sort_by_key(|e| match e {
+            Event::Read { chat_ids, .. } => chat_ids[0],
+            _ => 0,
+        });
+        assert!(
+            matches!(&ev[..], [Event::Read { chat_ids: a, rowid: 51 }, Event::Read { chat_ids: b, rowid: 52 }]
+                if a == &[1] && b == &[3]),
+            "{ev:?}"
+        );
+        assert!(w.tick().unwrap().is_empty(), "announced once");
+
+        // Reading an older message in a chat already announced further: nothing new.
+        rw.execute(
+            &format!(
+                "UPDATE message SET is_read = 1, date_read = {} WHERE ROWID = 7",
+                ns_ago(0)
+            ),
+            [],
+        )
+        .unwrap();
+        assert!(w.tick().unwrap().is_empty());
     }
 }
