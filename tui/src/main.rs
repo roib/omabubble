@@ -5,6 +5,7 @@ mod conn;
 mod emoji;
 mod notify;
 mod phone;
+mod pics;
 mod ui;
 
 use anyhow::{Result, bail};
@@ -82,6 +83,9 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<()> {
+    // Ask the terminal which graphics it speaks. This reads its reply from
+    // stdin, so it must happen before the key reader thread starts.
+    let picker = cfg.images.then(detect_graphics);
     let (tx, rx) = mpsc::channel::<AppEvent>();
     {
         let tx = tx.clone();
@@ -107,6 +111,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     }
 
     let mut app = App::new(cfg);
+    app.pics.picker = picker;
     app.recents = load_recents();
     app.hidden = load_hidden();
     let mut conn = Conn::default();
@@ -123,6 +128,19 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
 
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
+        if std::mem::take(&mut app.pics.needs_clear) {
+            // Pictures moved: wipe the screen and repaint everything so none
+            // leave pixels behind. Not `terminal.clear()`: that asks the
+            // terminal for the cursor position, and the key reader thread
+            // takes the reply, so the request times out and the app exits.
+            use ratatui::backend::{Backend, ClearType};
+            terminal.backend_mut().clear_region(ClearType::All)?;
+            // Both buffers blank now, matching the screen: the next draw
+            // writes every cell.
+            terminal.swap_buffers();
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+            app.pics.needs_clear = false;
+        }
 
         let first = match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(ev) => Some(ev),
@@ -245,4 +263,27 @@ fn save_recents(recents: &[String]) {
         }
         let _ = std::fs::write(path, recents.join("\n"));
     }
+}
+
+/// How this terminal can draw pictures.
+///
+/// Asking the terminal is the only reliable way, but a terminal that never
+/// answers leaves the query's reader blocked on stdin after it gives up, and
+/// it then swallows the first key press. Multiplexers are the usual
+/// non-answerers (and pass graphics through only when configured to), so
+/// inside one use half-blocks without asking.
+fn detect_graphics() -> ratatui_image::picker::Picker {
+    use ratatui_image::picker::{Picker, cap_parser::QueryStdioOptions};
+    if ["TMUX", "STY", "ZELLIJ"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+    {
+        return Picker::halfblocks();
+    }
+    // Terminals that answer do so within milliseconds; the library waits 2s.
+    Picker::from_query_stdio_with_options(QueryStdioOptions {
+        timeout: Duration::from_millis(500),
+        ..Default::default()
+    })
+    .unwrap_or_else(|_| Picker::halfblocks())
 }

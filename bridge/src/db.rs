@@ -405,9 +405,26 @@ impl Db {
         })
     }
 
+    /// `attachment.filename` for a picture attachment; `None` for unknown ids
+    /// and anything that isn't a picture type.
+    pub fn picture_file(&self, attachment_id: i64) -> Result<Option<String>> {
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = self
+            .conn
+            .prepare_cached(
+                "SELECT filename, mime_type, transfer_name FROM attachment WHERE ROWID = ?1",
+            )?
+            .query_row([attachment_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        Ok(row.and_then(|(file, mime, name)| {
+            let file = file?;
+            let name = name.unwrap_or_else(|| file.clone());
+            crate::images::is_picture(mime.as_deref(), &name).then_some(file)
+        }))
+    }
+
     fn attachments(&self, rowid: i64) -> Result<Vec<Attachment>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT a.transfer_name, a.filename, a.mime_type FROM message_attachment_join maj \
+            "SELECT a.transfer_name, a.filename, a.mime_type, a.ROWID FROM message_attachment_join maj \
              JOIN attachment a ON a.ROWID = maj.attachment_id WHERE maj.message_id = ?1 ORDER BY a.ROWID",
         )?;
         let atts = stmt
@@ -423,9 +440,12 @@ impl Db {
                             .map(String::from)
                     })
                     .unwrap_or_else(|| "attachment".into());
+                let mime: Option<String> = r.get(2)?;
                 Ok(Attachment {
+                    image: crate::images::is_picture(mime.as_deref(), &name),
                     name,
-                    mime: r.get(2)?,
+                    mime,
+                    id: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -754,6 +774,13 @@ pub mod tests {
         assert_eq!(att.text, "");
         assert_eq!(att.attachments[0].name, "IMG_1234.heic");
         assert_eq!(att.attachments[0].mime.as_deref(), Some("image/heic"));
+        assert_eq!((att.attachments[0].id, att.attachments[0].image), (1, true));
+        assert_eq!(
+            db.picture_file(1).unwrap().as_deref(),
+            Some("~/Library/Messages/Attachments/aa/00/A1/IMG_1234.heic")
+        );
+        assert_eq!(db.picture_file(99).unwrap(), None, "unknown id");
+        assert_eq!(db.picture_file(2).unwrap(), None, "not a picture");
 
         let group = db.history(&[3], None, 50).unwrap();
         assert_eq!(

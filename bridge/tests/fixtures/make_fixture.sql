@@ -137,3 +137,8 @@ INSERT INTO message (ROWID, guid, text, handle_id, service, date, is_from_me, is
     VALUES (23, 'G23', 'in two chats', 4, 'iMessage', (strftime('%s','2026-10-03 12:00:00') - 978307200) * 1000000000, 0, 1);
 INSERT INTO chat_message_join VALUES (4, 23, (strftime('%s','2026-10-03 12:00:00') - 978307200) * 1000000000);
 INSERT INTO chat_message_join VALUES (5, 23, (strftime('%s','2026-10-03 12:00:00') - 978307200) * 1000000000);
+
+-- A non-picture attachment: never served as an image.
+INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name, total_bytes) VALUES
+    (2, 'A2', '~/Library/Messages/Attachments/bb/01/A2/notes.pdf', 'application/pdf', 'notes.pdf', 2048);
+INSERT INTO message_attachment_join VALUES (19, 2);

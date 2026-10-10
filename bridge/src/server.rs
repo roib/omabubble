@@ -2,12 +2,14 @@
 
 use crate::contacts;
 use crate::db::Db;
+use crate::images::{Convert, Images};
 use crate::log;
 use crate::marks::ReadMarks;
 use crate::redact::redact;
 use crate::send::{Sender, Target};
 use crate::watch;
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use proto::{Command, Event, PROTOCOL_VERSION, Request, Response};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -54,6 +56,11 @@ pub struct ServeOpts {
     pub dry_run_send: bool,
     /// Contacts directory; `None` disables merging by person.
     pub contacts: Option<PathBuf>,
+    /// Pictures are only served from inside this folder.
+    pub attachments: PathBuf,
+    /// What `~/` in chat.db attachment paths means.
+    pub home: PathBuf,
+    pub convert: Convert,
 }
 
 /// Per-process settings shared by client threads.
@@ -62,6 +69,7 @@ struct Shared {
     contacts: Option<PathBuf>,
     sender: Sender,
     marks: Mutex<ReadMarks>,
+    images: Images,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -105,6 +113,7 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
         sender: Sender::new(opts.dry_run_send),
         // Beside the socket: a private directory the bridge already owns.
         marks: Mutex::new(ReadMarks::load(opts.socket.with_file_name("read.json"))),
+        images: Images::new(&opts.attachments, opts.home.clone(), opts.convert),
     });
     for stream in listener.incoming() {
         let stream = match stream {
@@ -143,7 +152,7 @@ fn bind(socket: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
+fn handle_client(stream: UnixStream, shared: &Arc<Shared>, hub: &Hub) -> Result<()> {
     let (tx, rx) = channel::<String>();
     let mut writer = stream.try_clone()?;
     let writer_thread = std::thread::spawn(move || {
@@ -194,6 +203,19 @@ fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
             continue;
         }
         let resp = match serde_json::from_str::<Request>(&line) {
+            // Conversions take a moment: answer them from their own thread
+            // so sends and history on this connection never wait behind one.
+            Ok(Request {
+                id,
+                cmd:
+                    Command::Image {
+                        attachment_id,
+                        max_px,
+                    },
+            }) => {
+                image_request(&db, shared, id, attachment_id, max_px, tx.clone());
+                continue;
+            }
             Ok(req) => dispatch(&db, shared, hub, req),
             Err(e) => Response::error(0, format!("bad request: {e}")),
         };
@@ -210,10 +232,55 @@ fn handle_client(stream: UnixStream, shared: &Shared, hub: &Hub) -> Result<()> {
     Ok(())
 }
 
+/// Looks the attachment up here (the DB handle stays on this thread) and
+/// converts it on another; the reply goes out through the client's writer.
+fn image_request(
+    db: &Db,
+    shared: &Arc<Shared>,
+    id: u64,
+    attachment_id: i64,
+    max_px: u32,
+    tx: Tx<String>,
+) {
+    let file = match db.picture_file(attachment_id) {
+        Ok(Some(file)) => file,
+        Ok(None) => return reply(&tx, Response::error(id, "not a picture attachment")),
+        Err(e) => return reply(&tx, Response::error(id, format!("{e:#}"))),
+    };
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        let resp = shared
+            .images
+            .resolve(&file)
+            .and_then(|path| shared.images.render(&path, max_px))
+            .map(|(bytes, orientation)| Response {
+                id,
+                image: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                orientation,
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| {
+                // The reason only: never the file name.
+                log!("picture failed: {e}");
+                Response::error(id, e.to_string())
+            });
+        reply(&tx, resp);
+    });
+}
+
+fn reply(tx: &Tx<String>, resp: Response) {
+    if let Ok(line) = serde_json::to_string(&resp) {
+        let _ = tx.send(line);
+    }
+}
+
 fn dispatch(db: &Db, shared: &Shared, hub: &Hub, req: Request) -> Response {
     let id = req.id;
     let sender = &shared.sender;
     let result = match req.cmd {
+        Command::Image { .. } => {
+            return Response::error(id, "image requests are handled per connection");
+        }
         Command::People { names } => db.handle_ids().map(|handles| Response {
             id,
             people: Some(contacts::groups_for(
@@ -347,6 +414,15 @@ mod tests {
     #[test]
     fn end_to_end_over_socket() {
         let db = fixture_db();
+        let (home, _) = crate::images::tests::fixture();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name) VALUES \
+                 (3, 'A3', '~/Library/Messages/Attachments/aa/pic.png', 'image/png', 'pic.png'), \
+                 (4, 'A4', '~/Library/Messages/Attachments/aa/link.png', 'image/png', 'link.png');",
+            )
+            .unwrap();
         let socket = std::env::temp_dir()
             .join(format!("imsg-test-{}", std::process::id()))
             .join("bridge.sock");
@@ -356,6 +432,9 @@ mod tests {
             socket: socket.clone(),
             dry_run_send: true,
             contacts: Some(crate::contacts::tests::fixture_dir()),
+            attachments: home.join("Library/Messages/Attachments"),
+            home: home.clone(),
+            convert: Convert::Passthrough,
         };
         std::thread::spawn(move || serve(opts).unwrap());
         let start = std::time::Instant::now();
@@ -418,6 +497,46 @@ mod tests {
         );
         assert_eq!(people[1].handles, vec!["+15550000002", "+15550000004"]);
         assert!(people.iter().all(|p| p.name.is_none()));
+
+        // Pictures: served by id, refused for non-pictures and escapes. A
+        // picture request and a quick request can be answered in either order.
+        writeln!(
+            w,
+            r#"{{"id":5,"cmd":"image","attachment_id":3,"max_px":800}}"#
+        )
+        .unwrap();
+        writeln!(w, r#"{{"id":6,"cmd":"list_chats","limit":1}}"#).unwrap();
+        let mut got = std::collections::HashMap::new();
+        for _ in 0..2 {
+            let ServerMsg::Response(r) = next() else {
+                panic!()
+            };
+            got.insert(r.id, r);
+        }
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(got[&5].image.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(png, b"\x89PNG fake picture bytes");
+        assert!(got[&6].chats.is_some());
+        for (id, attachment, why) in [
+            (7, 2, "not a picture"),
+            (8, 4, "outside"),
+            (9, 99, "not a picture"),
+        ] {
+            writeln!(
+                w,
+                r#"{{"id":{id},"cmd":"image","attachment_id":{attachment},"max_px":800}}"#
+            )
+            .unwrap();
+            let ServerMsg::Response(r) = next() else {
+                panic!()
+            };
+            assert!(
+                r.error.as_deref().unwrap_or("").contains(why),
+                "{id}: {:?}",
+                r.error
+            );
+        }
 
         // Marking read reaches every client as an event, then lowers the count.
         writeln!(

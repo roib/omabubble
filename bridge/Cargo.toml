@@ -17,3 +17,4 @@ dirs.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 notify = "8"
 libc = "0.2"
+base64 = "0.22"

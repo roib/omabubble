@@ -24,6 +24,8 @@ pub struct Config {
     pub bell: bool,
     /// Click chats and panes, scroll with the wheel. Hold Shift to drag-select text.
     pub mouse: bool,
+    /// Show picture attachments as thumbnails (Sixel/Kitty, else half-blocks).
+    pub images: bool,
     /// Show Contacts names instead of handles.
     pub names: bool,
     /// Overrides for people the Mac's Contacts doesn't link; their chats are shown as one.
@@ -53,6 +55,7 @@ impl Default for Config {
             notification_seconds: 20,
             bell: false,
             mouse: true,
+            images: true,
             names: true,
             people: Vec::new(),
         }
@@ -84,6 +87,10 @@ bell = false
 # Click a chat to open it, click a pane to focus it, scroll with the wheel.
 # While this is on, hold Shift to select text with the terminal's own mouse.
 mouse = true
+
+# Show pictures as thumbnails in the conversation (Sixel in foot, the Kitty
+# protocol in kitty/Ghostty, coarse half-blocks elsewhere). false: text labels.
+images = true
 
 # The bridge uses the Mac's Contacts to show one conversation per person, even
 # when chat.db has separate chats for their phone number and email. With names

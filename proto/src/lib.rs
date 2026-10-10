@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -46,6 +46,11 @@ pub enum Command {
         chat_ids: Vec<i64>,
         rowid: i64,
     },
+    /// A picture attachment as a JPEG no larger than `max_px` on its long side.
+    Image {
+        attachment_id: i64,
+        max_px: u32,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,6 +62,12 @@ pub struct Response {
     pub messages: Option<Vec<Message>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub people: Option<Vec<PersonGroup>>,
+    /// Base64 image bytes (JPEG from the Mac) for an `image` request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// EXIF orientation (1–8) to apply to `image`; its metadata is stripped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,6 +189,12 @@ pub struct Message {
 pub struct Attachment {
     pub name: String,
     pub mime: Option<String>,
+    /// attachment ROWID, for `image` requests.
+    #[serde(default)]
+    pub id: i64,
+    /// The bridge can serve this as a picture.
+    #[serde(default)]
+    pub image: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

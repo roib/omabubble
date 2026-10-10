@@ -2,6 +2,7 @@
 //! (scroll clamping, total lines, pane height).
 
 use crate::app::{App, Focus, Item, PendState, Status, Target, View, attachment_label, preview};
+use crate::pics::{Pic, Pics, THUMB_MAX_COLS, THUMB_ROWS};
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use proto::{Kind, Message};
 use ratatui::Frame;
@@ -9,6 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph};
+use ratatui_image::Image;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const LIST_WIDTH: u16 = 34;
@@ -191,12 +193,13 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             ),
         ];
         f.render_widget(Paragraph::new(hint).centered(), inner);
+        app.pics.finish_frame(Vec::new());
         return;
     }
 
     let width = inner.width as usize;
     let height = inner.height as usize;
-    let (mut lines, ranges) = build_lines(app, width);
+    let (mut lines, ranges, placements) = build_lines(app, width);
 
     let v = app.view.as_mut().unwrap();
     let total = lines.len();
@@ -242,6 +245,53 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     v.pad = pad;
     v.ranges = ranges;
     f.render_widget(Paragraph::new(visible), inner);
+    draw_pictures(f, app, inner, &placements, start, end, pad);
+}
+
+/// Draws thumbnails over their reserved rows. A picture is drawn only when
+/// all its rows are on screen (Sixel can't be cut at the pane's edge); ones
+/// within a screen of view are asked for so scrolling finds them ready.
+fn draw_pictures(
+    f: &mut Frame,
+    app: &mut App,
+    inner: Rect,
+    placements: &[Placement],
+    start: usize,
+    end: usize,
+    pad: usize,
+) {
+    let rows = THUMB_ROWS as usize;
+    let height = inner.height as usize;
+    let mut drawn = Vec::new();
+    for p in placements {
+        if p.line + rows + height < start || p.line > end + height {
+            continue;
+        }
+        if app.pics.get(p.id).is_none() {
+            app.pics.want(p.id);
+        }
+        if p.line < start || p.line + rows > end {
+            continue;
+        }
+        let Some(proto) = app.pics.protocol(p.id, p.max_cols) else {
+            continue;
+        };
+        let size = proto.size();
+        let x = if p.right {
+            p.col.saturating_sub(size.width)
+        } else {
+            p.col
+        };
+        let rect = Rect {
+            x: inner.x + x,
+            y: inner.y + (pad + p.line - start) as u16,
+            width: size.width,
+            height: size.height,
+        };
+        f.render_widget(Image::new(proto), rect);
+        drawn.push((rect, p.id));
+    }
+    app.pics.finish_frame(drawn);
 }
 
 fn follow(v: &mut View, s: usize, e: usize) {
@@ -255,11 +305,18 @@ fn follow(v: &mut View, s: usize, e: usize) {
 }
 
 /// All lines of the open conversation, plus each item's [start, end) line range.
-fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+/// All lines of the open conversation, each item's [start, end) line range,
+/// and where thumbnails go.
+fn build_lines(
+    app: &App,
+    width: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>, Vec<Placement>) {
     let v = app.view.as_ref().unwrap();
     let is_group = app.chat_for_view().is_some_and(|c| c.is_group);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut ranges = Vec::new();
+    let mut placements = Vec::new();
+    let pics = &app.pics;
 
     if v.loading {
         lines.push(Line::from("loading…".dark_gray()).centered());
@@ -294,17 +351,19 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
             Item::Msg(m) if m.from_me => outgoing(
                 &mut lines,
                 width,
-                &body(m),
+                &body(m, pics.enabled()),
                 status_of_msg(m),
                 m.edited,
                 m.service == "SMS",
+                pics,
+                &mut placements,
             ),
             Item::Msg(m) => {
                 let who = match (&m.sender, is_group) {
                     (Some(s), true) => Some(app.label(s)),
                     _ => None,
                 };
-                incoming(&mut lines, width, m, who)
+                incoming(&mut lines, width, m, who, pics, &mut placements)
             }
             Item::Pending(p) => {
                 let (word, style) = match &p.state {
@@ -320,6 +379,8 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
                     status,
                     false,
                     false,
+                    pics,
+                    &mut placements,
                 );
             }
         }
@@ -336,15 +397,60 @@ fn build_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Vec<(usize, usiz
         }
         ranges.push((start, lines.len()));
     }
-    (lines, ranges)
+    (lines, ranges, placements)
 }
 
 enum Body {
-    Text(String, Vec<String>),
+    Text(String, Vec<Att>),
     Dim(String),
 }
 
-fn body(m: &Message) -> Body {
+/// An attachment as a text label, or as room for a thumbnail.
+enum Att {
+    Label(String),
+    Picture { id: i64, name: String },
+}
+
+/// Where a thumbnail goes: its first line in the conversation, and either
+/// its left column (incoming) or the column its right edge stops at (sent).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Placement {
+    line: usize,
+    id: i64,
+    col: u16,
+    right: bool,
+    max_cols: u16,
+}
+
+/// Rows for one picture: `THUMB_ROWS` while loading or loaded (the first
+/// says what's coming), a single label if it failed. The bool says whether
+/// a picture goes over them.
+fn picture_rows(pics: &Pics, id: i64, name: &str, width: usize) -> (Vec<Vec<Span<'static>>>, bool) {
+    match pics.get(id) {
+        Some(Pic::Failed) => (
+            vec![vec![Span::styled(
+                truncate(&format!("[image: {name}]"), width),
+                Style::new().cyan(),
+            )]],
+            false,
+        ),
+        state => {
+            let first = if matches!(state, Some(Pic::Ready { .. })) {
+                Span::raw("")
+            } else {
+                Span::styled(
+                    truncate(&format!("⋯ {name}"), width),
+                    Style::new().dark_gray(),
+                )
+            };
+            let mut rows = vec![vec![first]];
+            rows.resize_with(THUMB_ROWS as usize, || vec![Span::raw("")]);
+            (rows, true)
+        }
+    }
+}
+
+fn body(m: &Message, pics_on: bool) -> Body {
     if m.unsent {
         return Body::Dim(
             if m.from_me {
@@ -359,7 +465,20 @@ fn body(m: &Message) -> Body {
         let who = if m.from_me { "you " } else { "" };
         return Body::Dim(format!("{who}{} to “{}”", t.emoji, t.target_text));
     }
-    let atts = m.attachments.iter().map(attachment_label).collect();
+    let atts = m
+        .attachments
+        .iter()
+        .map(|a| {
+            if pics_on && a.image && a.id > 0 {
+                Att::Picture {
+                    id: a.id,
+                    name: a.name.clone(),
+                }
+            } else {
+                Att::Label(attachment_label(a))
+            }
+        })
+        .collect();
     let text = if m.kind == Kind::Attachment {
         String::new()
     } else {
@@ -407,6 +526,7 @@ fn status_of_msg(m: &Message) -> Vec<Span<'static>> {
     spans
 }
 
+#[allow(clippy::too_many_arguments)]
 fn outgoing(
     lines: &mut Vec<Line<'static>>,
     width: usize,
@@ -414,6 +534,8 @@ fn outgoing(
     status: Vec<Span<'static>>,
     edited: bool,
     sms: bool,
+    pics: &Pics,
+    placements: &mut Vec<Placement>,
 ) {
     let status_text_w: usize = status.iter().map(|s| s.content.width()).sum();
     let status_w = status_text_w.max(STATUS_COL) + 2;
@@ -424,6 +546,7 @@ fn outgoing(
     let own = Style::new().fg(if sms { Color::Green } else { Color::LightBlue });
 
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut pic_at: Vec<(usize, i64)> = Vec::new();
     match body {
         Body::Dim(s) => rows.push(vec![Span::styled(
             s.clone(),
@@ -436,12 +559,33 @@ fn outgoing(
                 }
             }
             for a in atts {
-                rows.push(vec![Span::styled(truncate(a, text_w), Style::new().cyan())]);
+                match a {
+                    Att::Label(l) => {
+                        rows.push(vec![Span::styled(truncate(l, text_w), Style::new().cyan())])
+                    }
+                    Att::Picture { id, name } => {
+                        let (pic_rows, drawn) = picture_rows(pics, *id, name, text_w);
+                        if drawn {
+                            pic_at.push((rows.len(), *id));
+                        }
+                        rows.extend(pic_rows);
+                    }
+                }
             }
         }
     }
     if rows.is_empty() {
         rows.push(vec![Span::raw("")]);
+    }
+    // Thumbnails end where the text does, just left of the status column.
+    for (row, id) in pic_at {
+        placements.push(Placement {
+            line: lines.len() + row,
+            id,
+            col: width.saturating_sub(status_w) as u16,
+            right: true,
+            max_cols: (text_w as u16).min(THUMB_MAX_COLS),
+        });
     }
     let last = rows.len() - 1;
     for (i, mut spans) in rows.into_iter().enumerate() {
@@ -464,7 +608,14 @@ fn outgoing(
 }
 
 /// `who` is the sender label to prefix in group chats.
-fn incoming(lines: &mut Vec<Line<'static>>, width: usize, m: &Message, who: Option<String>) {
+fn incoming(
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+    m: &Message,
+    who: Option<String>,
+    pics: &Pics,
+    placements: &mut Vec<Placement>,
+) {
     let time = Span::styled(
         format!("{:<TIME_COL$}", hhmm(m.ts)),
         Style::new().dark_gray(),
@@ -475,7 +626,8 @@ fn incoming(lines: &mut Vec<Line<'static>>, width: usize, m: &Message, who: Opti
     let indent = " ".repeat(TIME_COL);
 
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
-    match body(m) {
+    let mut pic_at: Vec<(usize, i64)> = Vec::new();
+    match body(m, pics.enabled()) {
         Body::Dim(s) => rows.push(vec![Span::styled(s, Style::new().dark_gray().italic())]),
         Body::Text(text, atts) => {
             if !text.is_empty() {
@@ -491,15 +643,37 @@ fn incoming(lines: &mut Vec<Line<'static>>, width: usize, m: &Message, who: Opti
                 }
             }
             for a in atts {
-                rows.push(vec![Span::styled(
-                    truncate(&a, text_w),
-                    Style::new().cyan(),
-                )]);
+                match a {
+                    Att::Label(l) => rows.push(vec![Span::styled(
+                        truncate(&l, text_w),
+                        Style::new().cyan(),
+                    )]),
+                    Att::Picture { id, name } => {
+                        // Keep a group sender's name visible above a picture.
+                        if rows.is_empty() && sender.is_some() {
+                            rows.push(vec![Span::raw("")]);
+                        }
+                        let (pic_rows, drawn) = picture_rows(pics, id, &name, text_w);
+                        if drawn {
+                            pic_at.push((rows.len(), id));
+                        }
+                        rows.extend(pic_rows);
+                    }
+                }
             }
         }
     }
     if rows.is_empty() {
         rows.push(vec![Span::raw("")]);
+    }
+    for (row, id) in pic_at {
+        placements.push(Placement {
+            line: lines.len() + row,
+            id,
+            col: TIME_COL as u16,
+            right: false,
+            max_cols: (text_w as u16).min(THUMB_MAX_COLS),
+        });
     }
     let last = rows.len() - 1;
     for (i, mut spans) in rows.into_iter().enumerate() {
@@ -947,6 +1121,131 @@ mod tests {
         assert!(line_text.ends_with(" ✗"));
     }
 
+    fn picture_msg(from_me: bool, image: bool) -> Message {
+        Message {
+            rowid: 1,
+            chat_id: 1,
+            sender: (!from_me).then(|| "+15550000001".to_string()),
+            from_me,
+            text: String::new(),
+            ts: 0,
+            service: "iMessage".into(),
+            is_error: false,
+            edited: false,
+            unsent: false,
+            delivered: None,
+            read: None,
+            kind: Kind::Attachment,
+            attachments: vec![proto::Attachment {
+                name: "IMG_1.heic".into(),
+                mime: Some("image/heic".into()),
+                id: 5,
+                image,
+            }],
+            tapback: None,
+        }
+    }
+
+    fn pics_on() -> Pics {
+        let mut pics = Pics::default();
+        pics.picker = Some(ratatui_image::picker::Picker::halfblocks());
+        pics
+    }
+
+    fn text_of(l: &Line) -> String {
+        l.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn pictures_reserve_rows_and_placements() {
+        let pics = pics_on();
+        // Received: under the time column, 8 rows, a placeholder line first.
+        let (mut lines, mut at) = (vec![Line::from("before")], Vec::new());
+        incoming(
+            &mut lines,
+            80,
+            &picture_msg(false, true),
+            None,
+            &pics,
+            &mut at,
+        );
+        assert_eq!(lines.len(), 1 + THUMB_ROWS as usize);
+        assert!(text_of(&lines[1]).contains("⋯ IMG_1.heic"));
+        assert_eq!(
+            at,
+            vec![Placement {
+                line: 1,
+                id: 5,
+                col: TIME_COL as u16,
+                right: false,
+                max_cols: THUMB_MAX_COLS
+            }]
+        );
+
+        // In a group, the sender's name gets its own line above the picture.
+        let (mut lines, mut at) = (Vec::new(), Vec::new());
+        incoming(
+            &mut lines,
+            80,
+            &picture_msg(false, true),
+            Some("Alex".into()),
+            &pics,
+            &mut at,
+        );
+        assert!(text_of(&lines[0]).contains("[Alex]"));
+        assert_eq!(at[0].line, 1);
+
+        // Sent: the picture's right edge stops at the status column.
+        let (mut lines, mut at) = (Vec::new(), Vec::new());
+        let m = picture_msg(true, true);
+        outgoing(
+            &mut lines,
+            80,
+            &body(&m, true),
+            status_of_msg(&m),
+            false,
+            false,
+            &pics,
+            &mut at,
+        );
+        assert_eq!(lines.len(), THUMB_ROWS as usize);
+        assert!(at[0].right && at[0].col as usize == 80 - (STATUS_COL + 2));
+    }
+
+    #[test]
+    fn pictures_fall_back_to_labels() {
+        // Failed: a single label line, nothing drawn over it.
+        let mut pics = pics_on();
+        pics.failed(5);
+        let (mut lines, mut at) = (Vec::new(), Vec::new());
+        incoming(
+            &mut lines,
+            80,
+            &picture_msg(false, true),
+            None,
+            &pics,
+            &mut at,
+        );
+        assert_eq!(lines.len(), 1);
+        assert!(text_of(&lines[0]).contains("[image: IMG_1.heic]"));
+        assert!(at.is_empty());
+
+        // Pictures off, or not a picture: the plain attachment label.
+        for (pics, image) in [(Pics::default(), true), (pics_on(), false)] {
+            let (mut lines, mut at) = (Vec::new(), Vec::new());
+            incoming(
+                &mut lines,
+                80,
+                &picture_msg(false, image),
+                None,
+                &pics,
+                &mut at,
+            );
+            assert_eq!(lines.len(), 1);
+            assert!(at.is_empty());
+        }
+    }
+
     #[test]
     fn truncates_wide_chars() {
         assert_eq!(truncate("héllo wörld", 6), "héllo…");
@@ -965,6 +1264,8 @@ mod tests {
                 status,
                 false,
                 false,
+                &Pics::default(),
+                &mut Vec::new(),
             );
             let s: String = lines[0]
                 .spans
@@ -990,6 +1291,8 @@ mod tests {
             vec![Span::raw("10:00")],
             true,
             false,
+            &Pics::default(),
+            &mut Vec::new(),
         );
         for l in &lines {
             assert!(l.width() <= 40, "{l:?} is {} wide", l.width());

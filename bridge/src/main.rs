@@ -1,5 +1,7 @@
 mod contacts;
 mod db;
+mod images;
+mod jpeg;
 mod launchd;
 mod marks;
 mod redact;
@@ -50,6 +52,9 @@ enum Cmd {
         /// Don't read Contacts; chats of one person stay separate.
         #[arg(long)]
         no_contacts: bool,
+        /// Serve picture files as-is instead of converting with sips (demo data).
+        #[arg(long, hide = true)]
+        images_passthrough: bool,
     },
     /// Relay stdin/stdout to the running service (the SSH forced command).
     Connect {
@@ -109,16 +114,29 @@ fn main() -> Result<()> {
             dry_run_send,
             contacts,
             no_contacts,
-        } => server::serve(server::ServeOpts {
-            db: db.map_or_else(default_db, Ok)?,
-            socket: socket.map_or_else(default_socket, Ok)?,
-            dry_run_send,
-            contacts: if no_contacts {
-                None
-            } else {
-                contacts.or_else(contacts::default_dir)
-            },
-        }),
+            images_passthrough,
+        } => {
+            let db = db.map_or_else(default_db, Ok)?;
+            let home = dirs::home_dir().context("no home directory")?;
+            server::serve(server::ServeOpts {
+                // chat.db sits in ~/Library/Messages, beside Attachments.
+                attachments: db.with_file_name("Attachments"),
+                home,
+                convert: if cfg!(target_os = "macos") && !images_passthrough {
+                    images::Convert::Sips
+                } else {
+                    images::Convert::Passthrough
+                },
+                db,
+                socket: socket.map_or_else(default_socket, Ok)?,
+                dry_run_send,
+                contacts: if no_contacts {
+                    None
+                } else {
+                    contacts.or_else(contacts::default_dir)
+                },
+            })
+        }
         Cmd::Connect { socket } => relay::connect(&socket.map_or_else(default_socket, Ok)?),
         Cmd::Install => launchd::install(),
         Cmd::Uninstall => launchd::uninstall(),

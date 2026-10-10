@@ -11,6 +11,33 @@ cd "$(dirname "$0")/../.."
 ROOT=$PWD
 FIX=bridge/tests/fixtures
 
+# Two made-up photos (needs ImageMagick; without it they show as labels).
+# The bridge serves pictures only from beside chat.db, so they go there.
+pictures() {
+    command -v magick >/dev/null || return 0
+    a="$1/Attachments/00"
+    mkdir -p "$a/A1" "$a/A2"
+    # Dad's tomatoes: a garden bed with ripe fruit.
+    magick -size 1200x900 gradient:'#9bd36a'-'#2e5a24' \
+        -fill '#5a3a22' -draw 'rectangle 0,700 1200,900' \
+        -fill '#d8322a' -draw 'circle 330,420 405,420' -draw 'circle 560,360 630,360' \
+        -draw 'circle 790,450 868,450' -draw 'circle 470,560 535,560' -draw 'circle 700,600 770,600' \
+        -fill '#3f7d2c' -draw 'circle 330,350 350,350' -draw 'circle 560,292 578,292' \
+        -draw 'circle 790,377 810,377' -quality 85 "$a/A1/IMG_2041.jpg"
+    # Jordan's lake: sky, mountains, water.
+    magick -size 1200x800 gradient:'#bfe3ff'-'#f6e3c8' \
+        -fill '#5b6f86' -draw 'polygon 0,520 260,250 470,470 700,200 980,480 1200,330 1200,560 0,560' \
+        -fill '#2f6e9e' -draw 'rectangle 0,540 1200,800' \
+        -fill '#ffffff' -draw 'polygon 700,200 650,260 750,260' -quality 85 "$a/A2/IMG_3310.jpg"
+    sqlite3 "$1/chat.db" "
+        UPDATE attachment SET filename = '$a/A1/IMG_2041.jpg', mime_type = 'image/jpeg',
+            transfer_name = 'IMG_2041.jpg' WHERE ROWID = 1;
+        INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name, total_bytes)
+            VALUES (2, 'A2', '$a/A2/IMG_3310.jpg', 'image/jpeg', 'IMG_3310.jpg', 0);
+        INSERT INTO message_attachment_join VALUES (30, 2);
+        UPDATE message SET cache_has_attachments = 1 WHERE ROWID = 30;"
+}
+
 setup() {
     dir=$1
     rm -rf "$dir"
@@ -20,6 +47,7 @@ setup() {
     { schema "$FIX/make_fixture.sql"; cat scripts/demo/demo.sql; } | sqlite3 "$dir/chat.db"
     { schema "$FIX/make_contacts.sql"; cat scripts/demo/contacts.sql; } |
         sqlite3 "$dir/contacts/Sources/DEMO/AddressBook-v22.abcddb"
+    pictures "$dir"
 
     cargo build -q -p bridge -p tui
     cat > "$dir/config.toml" <<EOF

@@ -167,6 +167,13 @@ Pasting uses bracketed paste, so multi-line text lands in the input box and
 isn't sent until you press Enter. Copying writes OSC 52 (works over SSH, and in
 tmux with `set-clipboard on`), and also uses `wl-copy`/`xclip` when available.
 
+Pictures show as thumbnails in the conversation, 8 rows tall, loaded as they
+scroll into view. foot draws them with Sixel, kitty and Ghostty with the Kitty
+protocol, and other terminals (and anything inside tmux, screen or zellij) with
+coarse half-block characters. A picture only partly on screen shows its name
+until it's fully in view. Other attachments stay text labels; set
+`images = false` to show pictures as labels too.
+
 Mouse: click a chat to open it, click a pane to focus it (a click in the
 messages pane also selects that message), and scroll with the wheel. Because
 the app captures the mouse, hold Shift to drag-select text with the terminal;
@@ -225,6 +232,15 @@ What the design protects against, and what it doesn't.
 - **Notifications** carry the sender and a preview, and desktops (Omarchy
   included) keep a notification history on disk. Set
   `notification_detail = false` to notify with just "New message".
+- **Pictures:** a request names an attachment by id, never a path. The bridge
+  serves it only if chat.db lists it as a picture type (JPEG, PNG, GIF, HEIC,
+  WebP, TIFF), the file sits inside `~/Library/Messages/Attachments` once `~`
+  and symlinks are resolved, and it's under 50 MB. `sips` converts it to a
+  resized JPEG in a private temp directory that's removed straight after; the
+  bridge then strips every EXIF, XMP, IPTC and comment block (location
+  included) and sends the orientation separately. Previews over 2 MB are
+  refused. Nothing is
+  cached on disk on either machine.
 - **Input handling:** recipients and message text reach `osascript` as
   argv, never spliced into the script; all SQL is parameterised except
   integer chat ids; request lines over 1 MiB are rejected.

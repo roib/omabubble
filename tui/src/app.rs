@@ -4,6 +4,7 @@
 use crate::config::{Config, Person};
 use crate::emoji;
 use crate::phone;
+use crate::pics::{self, Pics};
 use chrono::{Local, TimeZone};
 use proto::{
     Chat, Command, Event, Kind, Message, PROTOCOL_VERSION, PersonGroup, Request, Response,
@@ -182,6 +183,7 @@ enum ReqKind {
     Since,
     Send { local_id: u64 },
     MarkRead,
+    Image { attachment_id: i64 },
 }
 
 pub struct App {
@@ -242,6 +244,7 @@ pub struct App {
     /// reporting never say otherwise, so this starts true.
     focused: bool,
     pub rects: Rects,
+    pub pics: Pics,
     /// Owned here so the list's scroll offset is known for clicks.
     pub list_state: ListState,
 }
@@ -294,6 +297,7 @@ impl App {
             quit: false,
             focused: true,
             rects: Rects::default(),
+            pics: Pics::default(),
             list_state: ListState::default(),
         }
     }
@@ -333,6 +337,7 @@ impl App {
                 _ => {}
             }
         }
+        self.pics.forget_loading();
     }
 
     pub fn on_line(&mut self, line: &str, now: Instant) {
@@ -444,6 +449,8 @@ impl App {
                     }
                     self.flash_msg(err, now);
                 }
+                // Shown in place as the picture's label; no flash.
+                ReqKind::Image { attachment_id } => self.pics.failed(attachment_id),
                 _ => self.flash_msg(err, now),
             }
             return;
@@ -467,6 +474,10 @@ impl App {
             }
             // Counts change through the `read` event the bridge broadcasts.
             ReqKind::MarkRead => {}
+            ReqKind::Image { attachment_id } => match r.image {
+                Some(b64) => self.pics.loaded(attachment_id, &b64, r.orientation),
+                None => self.pics.failed(attachment_id),
+            },
         }
     }
 
@@ -482,6 +493,18 @@ impl App {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        // Pictures the last frame found on screen and not yet loaded.
+        if self.status == Status::Connected {
+            for attachment_id in self.pics.take_wanted() {
+                self.request(
+                    Command::Image {
+                        attachment_id,
+                        max_px: pics::THUMB_PX,
+                    },
+                    ReqKind::Image { attachment_id },
+                );
+            }
+        }
         if let Status::Disconnected { retry_at, .. } = &self.status
             && now >= *retry_at
         {
@@ -2728,6 +2751,69 @@ mod tests {
         assert_eq!(app.emoji_hits()[0].as_str(), "🎉");
         app.on_key(key(KeyCode::Esc), now);
         assert!(app.emoji.is_none());
+    }
+
+    #[test]
+    fn pictures_are_requested_once_and_loaded() {
+        let (mut app, now) = connected();
+        app.pics.picker = Some(ratatui_image::picker::Picker::halfblocks());
+        app.pics.want(7);
+        app.tick(now);
+        let reqs = requests(&mut app);
+        let (
+            id,
+            Command::Image {
+                attachment_id: 7,
+                max_px,
+            },
+        ) = reqs[0]
+        else {
+            panic!("{reqs:?}");
+        };
+        assert_eq!(max_px, pics::THUMB_PX);
+        app.pics.want(7);
+        app.tick(now);
+        assert!(requests(&mut app).is_empty(), "already loading");
+        app.on_line(
+            &line(&Response {
+                id,
+                image: Some(pics::tests::png_b64(8, 4)),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert!(matches!(app.pics.get(7), Some(pics::Pic::Ready { .. })));
+
+        // A refusal marks it failed, with no flash.
+        app.pics.want(8);
+        app.tick(now);
+        let id = requests(&mut app)[0].0;
+        app.on_line(&line(&Response::error(id, "not a picture attachment")), now);
+        assert!(matches!(app.pics.get(8), Some(pics::Pic::Failed)));
+        assert!(app.flash.is_none());
+
+        // Loading pictures are asked for again after a reconnect.
+        app.pics.want(9);
+        app.tick(now);
+        requests(&mut app);
+        app.on_closed("gone".into(), now);
+        app.pics.want(9);
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+            }),
+            now,
+        );
+        requests(&mut app);
+        app.tick(now);
+        assert!(requests(&mut app).iter().any(|(_, c)| matches!(
+            c,
+            Command::Image {
+                attachment_id: 9,
+                ..
+            }
+        )));
     }
 
     #[test]
