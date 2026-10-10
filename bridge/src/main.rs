@@ -25,7 +25,7 @@ macro_rules! log {
 #[derive(Parser)]
 #[command(
     name = "imsg-bridge",
-    version,
+    version = env!("IMSG_VERSION"),
     about = "iMessage bridge for the imsg TUI"
 )]
 struct Cli {

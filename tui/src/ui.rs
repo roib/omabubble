@@ -891,6 +891,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::new().black().on_yellow(),
         ));
     }
+    if let Some(bridge) = &app.bridge_mismatch {
+        left.push(Span::styled(
+            format!(" ⚠ bridge {bridge}, imsg {} ", env!("CARGO_PKG_VERSION")),
+            Style::new().black().on_yellow(),
+        ));
+    }
     if let Some((msg, _, _)) = &app.flash {
         left.push(Span::styled(
             format!(" ✓ {msg} "),

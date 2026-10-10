@@ -253,6 +253,8 @@ pub struct App {
     pub status: Status,
     /// The Mac's clock minus ours, when it's off by more than a couple of minutes.
     pub clock_skew: Option<i64>,
+    /// The bridge's version, when it's a different release from this imsg.
+    pub bridge_mismatch: Option<String>,
     backoff: Duration,
     last_bridge_error: Option<String>,
     /// (message, shown at, how long).
@@ -317,6 +319,7 @@ impl App {
             last_hidden: None,
             status: Status::Connecting,
             clock_skew: None,
+            bridge_mismatch: None,
             backoff: FIRST_BACKOFF,
             last_bridge_error: None,
             flash: None,
@@ -396,6 +399,11 @@ impl App {
                 self.clock_skew = time
                     .map(|t| t - chrono::Utc::now().timestamp())
                     .filter(|d| d.abs() > CLOCK_SKEW_WARN);
+                // Same protocol is enough to work; a different release is
+                // still worth knowing about. Builds of one release differ
+                // only in the commit, which isn't compared.
+                self.bridge_mismatch = (release(&bridge) != release(env!("IMSG_VERSION")))
+                    .then(|| release(&bridge).to_string());
                 if version != PROTOCOL_VERSION {
                     self.status = Status::Fatal(format!(
                         "bridge {bridge} speaks protocol v{version}, this imsg speaks v{PROTOCOL_VERSION}: \
@@ -1902,6 +1910,11 @@ impl App {
     }
 }
 
+/// The release part of a version string: "0.2.0 (455dfb1)" → "0.2.0".
+fn release(version: &str) -> &str {
+    version.split_whitespace().next().unwrap_or(version)
+}
+
 /// Every chat row a (possibly merged) list entry stands for.
 fn chat_rows(c: &Chat) -> Vec<i64> {
     std::iter::once(c.chat_id)
@@ -3251,6 +3264,27 @@ mod tests {
             now,
         );
         assert_eq!(app.clock_skew, None, "an older bridge doesn't say");
+    }
+
+    #[test]
+    fn other_bridge_release_is_flagged() {
+        let mut app = App::new(&cfg());
+        let now = Instant::now();
+        let hello = |bridge: &str| {
+            line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: bridge.into(),
+                time: None,
+            })
+        };
+        let ours = env!("CARGO_PKG_VERSION");
+        app.on_line(&hello(&format!("{ours} (0000000-dirty)")), now);
+        assert_eq!(app.bridge_mismatch, None, "only the commit differs");
+        app.on_line(&hello(ours), now);
+        assert_eq!(app.bridge_mismatch, None, "older bridges send no commit");
+        app.on_line(&hello("0.0.1 (1234567)"), now);
+        assert_eq!(app.bridge_mismatch.as_deref(), Some("0.0.1"));
+        assert_eq!(app.status, Status::Connected, "still usable");
     }
 
     #[test]

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 #[derive(Parser)]
 #[command(
     name = "imsg",
-    version,
+    version = env!("IMSG_VERSION"),
     about = "iMessage in the terminal, via imsg-bridge on a Mac"
 )]
 struct Cli {
