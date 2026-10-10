@@ -114,6 +114,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     app.pics.picker = picker;
     app.recents = load_recents();
     app.hidden = load_hidden();
+    app.drafts = load_drafts();
     let mut conn = Conn::default();
     let start = |conn: &mut Conn, app: &mut App| {
         app.on_connecting();
@@ -199,6 +200,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 Effect::Reconnect => start(&mut conn, &mut app),
                 Effect::Disconnect => conn.stop(),
                 Effect::SaveRecents(recents) => save_recents(&recents),
+                Effect::SaveDrafts(drafts) => save_drafts(&drafts),
                 Effect::SavePicture { name, jpeg } => {
                     let msg = match save_picture(&name, &jpeg) {
                         Ok(path) => {
@@ -216,8 +218,45 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
             break;
         }
     }
+    // Whatever is in the input becomes the open chat's draft.
+    app.flush_draft();
+    save_drafts(&app.drafts);
     conn.stop();
     Ok(())
+}
+
+fn drafts_path() -> Option<PathBuf> {
+    dirs::state_dir().map(|d| d.join("imsg/drafts.json"))
+}
+
+fn load_drafts() -> HashMap<String, String> {
+    drafts_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Unsent message text: readable only by you, written whole via a temp file.
+fn save_drafts(drafts: &HashMap<String, String>) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(path) = drafts_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(json) = serde_json::to_vec(drafts) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &json));
+    if written.is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 fn recents_path() -> Option<PathBuf> {

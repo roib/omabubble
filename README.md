@@ -154,7 +154,7 @@ prints only counts.
 | | `Ctrl-W` / `Ctrl-U` | Delete word / clear |
 | | `:` + two letters | Emoji completion (`:thu` → 👍); Tab/↑↓ choose, Enter insert, Esc close. A full `:fire:` converts when you type a space |
 | | `Ctrl-E` | Emoji picker: recently used first, type to search by shortcode or name |
-| | `Esc` | Back to the list |
+| | `Esc` | Back to the list (what you typed stays as that chat's draft) |
 | Messages pane | `j`/`k` | Select a message |
 | | `y` | Copy the selected message |
 | | `Y` | Copy with `[time sender]` |
@@ -167,6 +167,14 @@ prints only counts.
 Pasting uses bracketed paste, so multi-line text lands in the input box and
 isn't sent until you press Enter. Copying writes OSC 52 (works over SSH, and in
 tmux with `set-clipboard on`), and also uses `wl-copy`/`xclip` when available.
+
+Unsent text stays with its chat: switch away and the chat list shows
+`✎ Draft: …` in place of the last message (or a `✎` after the name while it
+has unread messages); switch back and it's in the input again. Sending or
+emptying the input clears it. Drafts are saved to
+`~/.local/state/imsg/drafts.json` (readable only by you), about two seconds
+after you stop typing and when you quit, so they survive restarts. They stay
+on this machine.
 
 Pictures show as thumbnails in the conversation, 8 rows tall, loaded as they
 scroll into view. foot draws them with Sixel, kitty and Ghostty with the Kitty

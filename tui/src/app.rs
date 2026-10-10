@@ -28,6 +28,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(150);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const FLASH_FOR: Duration = Duration::from_secs(3);
+/// Typing pauses this long before the input is saved as a draft.
+const DRAFT_SAVE_AFTER: Duration = Duration::from_secs(2);
 const HINT_FOR: Duration = Duration::from_secs(12);
 /// Echoes that matched no placeholder, kept for a retry after the chat list refreshes.
 const UNMATCHED_KEEP: usize = 20;
@@ -47,6 +49,8 @@ pub enum Effect {
     Disconnect,
     /// Persist recently used emojis.
     SaveRecents(Vec<String>),
+    /// Persist unsent drafts.
+    SaveDrafts(HashMap<String, String>),
     /// Write a picture to the downloads folder and open it.
     SavePicture {
         name: String,
@@ -226,6 +230,10 @@ pub struct App {
 
     pub focus: Focus,
     pub input: String,
+    /// Unsent text per chat (see `draft_key`), kept across restarts.
+    pub drafts: HashMap<String, String>,
+    /// When the input last changed, to save it as a draft once typing pauses.
+    input_edited: Option<Instant>,
     /// Byte offset into `input`.
     pub cursor: usize,
     pub popup: Option<Popup>,
@@ -294,6 +302,8 @@ impl App {
             pending: Vec::new(),
             focus: Focus::List,
             input: String::new(),
+            drafts: HashMap::new(),
+            input_edited: None,
             cursor: 0,
             popup: None,
             emoji: None,
@@ -517,6 +527,13 @@ impl App {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        if self
+            .input_edited
+            .is_some_and(|t| now.duration_since(t) >= DRAFT_SAVE_AFTER)
+        {
+            self.input_edited = None;
+            self.stash_input();
+        }
         // Pictures the last frame found on screen and not yet loaded.
         if self.status == Status::Connected {
             for (attachment_id, px) in self.pics.take_wanted() {
@@ -959,8 +976,15 @@ impl App {
                 .as_ref()
                 .is_some_and(|v| v.target == Target::Draft(h.clone()))
         {
+            // The new conversation's draft key changes from the handle to the chat.
+            if self.drafts.remove(&format!("to:{h}")).is_some() {
+                self.effects.push(Effect::SaveDrafts(self.drafts.clone()));
+            }
             self.view = Some(View::new(Target::Chat(m.chat_id)));
             self.load_history(m.chat_id, false);
+            if !self.input.trim().is_empty() {
+                self.input_edited = Some(Instant::now());
+            }
         }
         self.clamp_sel();
         true
@@ -1138,9 +1162,9 @@ impl App {
         if self.open_chat_id() == Some(id) {
             return;
         }
+        self.stash_input();
         self.view = Some(View::new(Target::Chat(id)));
-        self.input.clear();
-        self.cursor = 0;
+        self.restore_input();
         self.load_history(id, false);
         if self.status != Status::Connected {
             self.flash_msg("not connected", now);
@@ -1187,6 +1211,8 @@ impl App {
         });
         self.input.clear();
         self.cursor = 0;
+        self.input_edited = None;
+        self.stash_input();
         if let Some(v) = &mut self.view {
             v.scroll = 0;
             v.appended = true;
@@ -1212,13 +1238,84 @@ impl App {
                 self.open_selected(now);
             }
             None => {
+                self.stash_input();
                 self.view = Some(View::new(Target::Draft(handle)));
+                self.restore_input();
                 self.focus = Focus::Input;
             }
         }
-        // Ready to send; Enter sends.
-        self.input = p.msg;
+        // A message typed in the popup is ready to send; otherwise any
+        // draft for that chat stays.
+        if !p.msg.trim().is_empty() {
+            self.input = p.msg;
+            self.cursor = self.input.len();
+            self.input_edited = Some(now);
+        }
+    }
+
+    /// The draft key for a chat or new conversation. A merged person's chat
+    /// can change which row it's built on, so it's keyed by its lowest row.
+    fn draft_key(&self, target: &Target) -> String {
+        match target {
+            Target::Draft(handle) => format!("to:{handle}"),
+            Target::Chat(id) => {
+                let low = self
+                    .chats
+                    .iter()
+                    .find(|c| c.chat_id == *id)
+                    .map_or(*id, |c| {
+                        c.chat_ids.iter().copied().fold(c.chat_id, i64::min)
+                    });
+                format!("chat:{low}")
+            }
+        }
+    }
+
+    /// The draft to show for a chat in the list; never for the open chat,
+    /// whose text is simply what's in the input.
+    pub fn draft_for(&self, c: &Chat) -> Option<&str> {
+        if self.open_chat_id() == Some(c.chat_id) {
+            return None;
+        }
+        self.drafts
+            .get(&self.draft_key(&Target::Chat(c.chat_id)))
+            .map(String::as_str)
+    }
+
+    /// Files the input under the open chat: kept if there's text, dropped
+    /// if it's empty or only whitespace.
+    fn stash_input(&mut self) {
+        let Some(target) = self.view.as_ref().map(|v| v.target.clone()) else {
+            return;
+        };
+        let key = self.draft_key(&target);
+        let changed = if self.input.trim().is_empty() {
+            self.drafts.remove(&key).is_some()
+        } else {
+            self.drafts.insert(key, self.input.clone()).as_deref() != Some(self.input.as_str())
+        };
+        if changed {
+            self.effects.push(Effect::SaveDrafts(self.drafts.clone()));
+        }
+    }
+
+    /// Puts the open chat's draft (if any) back in the input.
+    fn restore_input(&mut self) {
+        self.input = match self.view.as_ref().map(|v| v.target.clone()) {
+            Some(target) => self
+                .drafts
+                .get(&self.draft_key(&target))
+                .cloned()
+                .unwrap_or_default(),
+            None => String::new(),
+        };
         self.cursor = self.input.len();
+        self.input_edited = None;
+    }
+
+    /// Saves the open chat's draft now, e.g. before quitting.
+    pub fn flush_draft(&mut self) {
+        self.stash_input();
     }
 
     fn scroll_by(&mut self, delta: isize) {
@@ -1360,6 +1457,15 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
+        let before = (
+            self.input.clone(),
+            self.view.as_ref().map(|v| v.target.clone()),
+        );
+        self.paste(text);
+        self.note_input_change(before, Instant::now());
+    }
+
+    fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if let Some(p) = &mut self.popup {
             if p.field == 0 {
@@ -1378,6 +1484,23 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) {
+        let before = (
+            self.input.clone(),
+            self.view.as_ref().map(|v| v.target.clone()),
+        );
+        self.handle_key(key, now);
+        self.note_input_change(before, now);
+    }
+
+    /// Typing in the open chat is saved as its draft once it pauses.
+    fn note_input_change(&mut self, before: (String, Option<Target>), now: Instant) {
+        let target = self.view.as_ref().map(|v| v.target.clone());
+        if self.input != before.0 && target == before.1 {
+            self.input_edited = Some(now);
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, now: Instant) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
@@ -2968,6 +3091,117 @@ mod tests {
         app.on_key(key(KeyCode::Enter), now);
         assert!(app.viewer.is_none());
         assert_eq!(app.focus, Focus::Input);
+    }
+
+    fn open_chat(app: &mut App, chat_id: i64, now: Instant) {
+        app.selected = app.chats.iter().position(|c| c.chat_id == chat_id).unwrap();
+        app.focus = Focus::List;
+        app.on_key(key(KeyCode::Enter), now);
+        requests(app);
+    }
+
+    fn saved(app: &App) -> Option<HashMap<String, String>> {
+        app.effects.iter().rev().find_map(|e| match e {
+            Effect::SaveDrafts(d) => Some(d.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn drafts_follow_their_chat() {
+        let (mut app, now) = connected();
+        let chat = |app: &App, id| app.chats.iter().find(|c| c.chat_id == id).unwrap().clone();
+        open_chat(&mut app, 1, now);
+        app.on_paste("running ~10 min");
+        assert_eq!(
+            app.draft_for(&chat(&app, 1)),
+            None,
+            "the open chat shows no draft"
+        );
+
+        // Leaving files it as a draft and saves it.
+        open_chat(&mut app, 2, now);
+        assert_eq!(app.input, "", "chat 2 has nothing");
+        assert_eq!(app.draft_for(&chat(&app, 1)), Some("running ~10 min"));
+        assert_eq!(saved(&app).unwrap()["chat:1"], "running ~10 min");
+
+        // Coming back puts it in the input, cursor at the end.
+        open_chat(&mut app, 1, now);
+        assert_eq!((app.input.as_str(), app.cursor), ("running ~10 min", 15));
+        assert_eq!(app.draft_for(&chat(&app, 1)), None);
+
+        // Sending clears it.
+        app.on_key(key(KeyCode::Enter), now);
+        assert!(app.drafts.is_empty());
+        assert!(saved(&app).unwrap().is_empty());
+        open_chat(&mut app, 2, now);
+        assert_eq!(app.draft_for(&chat(&app, 1)), None);
+    }
+
+    #[test]
+    fn empty_input_leaves_no_draft_and_pauses_save() {
+        let (mut app, now) = connected();
+        open_chat(&mut app, 1, now);
+        app.on_paste("   \n ");
+        open_chat(&mut app, 2, now);
+        assert!(app.drafts.is_empty(), "whitespace isn't a draft");
+
+        // Typing is saved once it pauses, without leaving the chat.
+        app.on_key(key(KeyCode::Char('h')), now);
+        app.on_key(key(KeyCode::Char('i')), now);
+        app.tick(now + Duration::from_secs(1));
+        assert!(app.drafts.is_empty(), "still typing");
+        app.tick(now + Duration::from_secs(3));
+        assert_eq!(app.drafts["chat:2"], "hi");
+
+        // Emptying the input removes the draft.
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            now,
+        );
+        open_chat(&mut app, 1, now);
+        assert!(app.drafts.is_empty());
+    }
+
+    #[test]
+    fn popup_keeps_or_replaces_a_draft() {
+        let (mut app, now) = connected();
+        open_chat(&mut app, 2, now);
+        app.on_paste("half typed");
+        open_chat(&mut app, 1, now);
+
+        // New conversation with chat 2's handle and no message: the draft returns.
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Char('n')), now);
+        app.on_paste("+15550000002");
+        app.on_key(key(KeyCode::Enter), now);
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.input, "half typed");
+
+        // A brand-new number keeps its own draft under the handle.
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Char('n')), now);
+        app.on_paste("+15550000099");
+        app.on_key(key(KeyCode::Enter), now);
+        app.on_paste("hello new");
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.input, "hello new");
+        open_chat(&mut app, 1, now);
+        assert_eq!(app.drafts["to:+15550000099"], "hello new");
+        assert_eq!(app.drafts["chat:2"], "half typed");
+    }
+
+    #[test]
+    fn merged_chat_draft_key_is_stable() {
+        let (mut app, now) = connected();
+        app.chats[0].chat_ids = vec![1];
+        app.chats[0].chat_id = 9;
+        assert_eq!(
+            app.draft_key(&Target::Chat(9)),
+            "chat:1",
+            "lowest row of the person"
+        );
+        let _ = now;
     }
 
     #[test]

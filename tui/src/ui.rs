@@ -88,6 +88,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 .map(|m| list_time(m.ts, &now))
                 .unwrap_or_default();
             let unread = c.unread > 0;
+            let draft = app.draft_for(c);
             let mut name = c.display.clone();
             if c.service == "SMS" {
                 name.push_str(" [SMS]");
@@ -96,9 +97,16 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 name = format!("({}) {name}", c.unread);
             }
             let marker = if unread { "* " } else { "  " };
-            let name_w = inner_w.saturating_sub(2 + time.width() + 1);
+            // With unread messages the preview stays theirs; a ✎ after the
+            // name says a draft is waiting.
+            let pen = if draft.is_some() && unread {
+                " ✎"
+            } else {
+                ""
+            };
+            let name_w = inner_w.saturating_sub(2 + time.width() + 1 + pen.width());
             let name = truncate(&name, name_w);
-            let pad = inner_w.saturating_sub(2 + name.width() + time.width());
+            let pad = inner_w.saturating_sub(2 + name.width() + pen.width() + time.width());
             let name_style = if unread {
                 Style::new().bold()
             } else {
@@ -107,14 +115,31 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             let l1 = Line::from(vec![
                 Span::styled(marker, Style::new().fg(Color::Yellow).bold()),
                 Span::styled(name, name_style),
+                Span::styled(pen, Style::new().fg(DRAFT_COLOR)),
                 Span::raw(" ".repeat(pad)),
                 Span::styled(time, Style::new().dark_gray()),
             ]);
-            let prev = c.last.as_ref().map(preview).unwrap_or_default();
-            let l2 = Line::from(Span::styled(
-                format!("  {}", truncate(&prev, inner_w.saturating_sub(2))),
-                Style::new().dark_gray(),
-            ));
+            let l2 = match draft {
+                Some(text) if !unread => {
+                    let label = "✎ Draft: ";
+                    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(label, Style::new().fg(DRAFT_COLOR)),
+                        Span::styled(
+                            truncate(first.trim(), inner_w.saturating_sub(2 + label.width())),
+                            Style::new().dark_gray(),
+                        ),
+                    ])
+                }
+                _ => {
+                    let prev = c.last.as_ref().map(preview).unwrap_or_default();
+                    Line::from(Span::styled(
+                        format!("  {}", truncate(&prev, inner_w.saturating_sub(2))),
+                        Style::new().dark_gray(),
+                    ))
+                }
+            };
             let (l1, l2) = if i == app.selected {
                 (lift_dim(l1), lift_dim(l2))
             } else {
@@ -132,6 +157,8 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Background for selected rows.
 const SELECTED_BG: Color = Color::DarkGray;
+/// The draft marker, orange like a pencil mark rather than a message.
+const DRAFT_COLOR: Color = Color::Rgb(0xff, 0x9f, 0x0a);
 
 /// Dim text is drawn in the selection colour, so on a selected row it would
 /// vanish; lighten it there.
