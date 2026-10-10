@@ -199,6 +199,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 Effect::Reconnect => start(&mut conn, &mut app),
                 Effect::Disconnect => conn.stop(),
                 Effect::SaveRecents(recents) => save_recents(&recents),
+                Effect::SavePicture { name, jpeg } => {
+                    let msg = match save_picture(&name, &jpeg) {
+                        Ok(path) => {
+                            open_file(&path);
+                            format!("saved {}", path.display())
+                        }
+                        Err(e) => format!("couldn't save: {e}"),
+                    };
+                    app.notice(msg, Instant::now());
+                }
                 Effect::SaveHidden(hidden) => save_hidden(&hidden),
             }
         }
@@ -286,4 +296,83 @@ fn detect_graphics() -> ratatui_image::picker::Picker {
         ..Default::default()
     })
     .unwrap_or_else(|_| Picker::halfblocks())
+}
+
+/// Writes a picture to the downloads folder as `<name>.jpg`, never
+/// overwriting: `<name>-1.jpg`, `<name>-2.jpg`, … when taken.
+fn save_picture(name: &str, jpeg: &[u8]) -> std::io::Result<PathBuf> {
+    let dir = dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+        .ok_or_else(|| std::io::Error::other("no downloads folder"))?;
+    std::fs::create_dir_all(&dir)?;
+    let stem = picture_stem(name);
+    for n in 0.. {
+        let file = if n == 0 {
+            format!("{stem}.jpg")
+        } else {
+            format!("{stem}-{n}.jpg")
+        };
+        let path = dir.join(file);
+        // create_new: fails rather than replacing a file that appeared meanwhile.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                std::io::Write::write_all(&mut f, jpeg)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+/// A safe file stem from an attachment name: no extension, no path parts.
+fn picture_stem(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let stem = base.rsplit_once('.').map_or(base, |(s, _)| s);
+    let clean: String = stem
+        .chars()
+        .map(|c| if c.is_control() { '_' } else { c })
+        .collect::<String>()
+        .trim_start_matches('.')
+        .to_string();
+    if clean.is_empty() {
+        "picture".into()
+    } else {
+        clean
+    }
+}
+
+fn open_file(path: &std::path::Path) {
+    if let Ok(mut child) = std::process::Command::new("xdg-open")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::spawn(move || child.wait());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn picture_stems() {
+        use super::picture_stem;
+        assert_eq!(picture_stem("IMG_2041.heic"), "IMG_2041");
+        assert_eq!(
+            picture_stem("../../.bashrc"),
+            "picture",
+            "hidden files and paths are dropped"
+        );
+        assert_eq!(picture_stem("a/b/c.jpg"), "c");
+        assert_eq!(picture_stem(""), "picture");
+        assert_eq!(picture_stem("..."), "picture");
+        assert_eq!(picture_stem("no ext"), "no ext");
+    }
 }

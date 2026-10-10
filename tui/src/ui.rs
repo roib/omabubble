@@ -2,7 +2,7 @@
 //! (scroll clamping, total lines, pane height).
 
 use crate::app::{App, Focus, Item, PendState, Status, Target, View, attachment_label, preview};
-use crate::pics::{Pic, Pics, THUMB_MAX_COLS, THUMB_ROWS};
+use crate::pics::{FULL_PX, Pic, Pics, THUMB_MAX_COLS, THUMB_ROWS};
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use proto::{Kind, Message};
 use ratatui::Frame;
@@ -154,6 +154,9 @@ fn highlight(line: Line<'static>) -> Line<'static> {
 // ------------------------------------------------------------------ messages
 
 fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.viewer.is_some() {
+        return draw_viewer(f, app, area);
+    }
     let focused = app.focus == Focus::Messages;
     let title = match app.view.as_ref().map(|v| &v.target) {
         Some(Target::Chat(_)) => app
@@ -246,6 +249,58 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     v.ranges = ranges;
     f.render_widget(Paragraph::new(visible), inner);
     draw_pictures(f, app, inner, &placements, start, end, pad);
+}
+
+/// One picture filling the messages pane, centred, at up to `FULL_PX`.
+fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(v) = &app.viewer else { return };
+    let (id, name) = v.current();
+    let count = if v.pictures.len() > 1 {
+        format!(" · {}/{}", v.index + 1, v.pictures.len())
+    } else {
+        String::new()
+    };
+    let title = format!(
+        " {}{count} ",
+        truncate(name, area.width.saturating_sub(12) as usize)
+    );
+    let block = Block::bordered().title(title).border_style(border(true));
+    let inner = block.inner(area);
+    app.rects.messages = inner;
+    f.render_widget(block, area);
+
+    let key = (id, FULL_PX);
+    if app.pics.get_at(key).is_none() {
+        app.pics.want_at(key);
+    }
+    let note = match app.pics.get_at(key) {
+        Some(Pic::Failed) => Some(format!("couldn't load {name}")),
+        Some(Pic::Ready { .. }) => None,
+        _ => Some("loading…".to_string()),
+    };
+    let mut drawn = Vec::new();
+    if let Some(note) = note {
+        let y = inner.y + inner.height / 2;
+        f.render_widget(
+            Paragraph::new(Line::from(note.dark_gray()).centered()),
+            Rect {
+                y,
+                height: 1,
+                ..inner
+            },
+        );
+    } else if let Some(proto) = app.pics.protocol_fit(key, inner.as_size()) {
+        let size = proto.size();
+        let rect = Rect {
+            x: inner.x + inner.width.saturating_sub(size.width) / 2,
+            y: inner.y + inner.height.saturating_sub(size.height) / 2,
+            width: size.width.min(inner.width),
+            height: size.height.min(inner.height),
+        };
+        f.render_widget(Image::new(proto), rect);
+        drawn.push((rect, id));
+    }
+    app.pics.finish_frame(drawn);
 }
 
 /// Draws thumbnails over their reserved rows. A picture is drawn only when
@@ -810,13 +865,23 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Some(false) => Some("type to search  ↑↓ choose  Enter insert  Esc close"),
         None => None,
     };
+    let viewer_hint = app.viewer.as_ref().map(|v| {
+        if v.pictures.len() > 1 {
+            "←/→ picture  o save & open  Esc back"
+        } else {
+            "o save & open  Esc back"
+        }
+    });
     let hints = match (app.popup.is_some(), app.focus) {
+        _ if viewer_hint.is_some() => viewer_hint.unwrap(),
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
         (_, Focus::List) => "j/k move  Enter open  n new  d hide  Tab focus  q quit",
         (_, Focus::Messages) => {
             if app.selected_pending_visible() {
                 "Enter resend  x discard  j/k select  y copy  Esc back"
+            } else if app.selected_has_pictures() {
+                "Enter view picture  j/k select  y copy  Esc back"
             } else {
                 "j/k select  y copy  Y +meta  v range  PgUp older  Esc back"
             }

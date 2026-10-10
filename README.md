@@ -160,6 +160,7 @@ prints only counts.
 | | `Y` | Copy with `[time sender]` |
 | | `v` | Start or cancel a range; `y`/`Y` then copy the range |
 | | `Enter` on a failed message | Put its text back in the input to resend |
+| | `Enter` on a message with pictures | View them full-pane: `←/→` between pictures, `o` save to `~/Downloads` and open, `Esc` back |
 | | `x` on a failed message | Discard it |
 | | `Esc` | Cancel range / back |
 
@@ -172,7 +173,9 @@ scroll into view. foot draws them with Sixel, kitty and Ghostty with the Kitty
 protocol, and other terminals (and anything inside tmux, screen or zellij) with
 coarse half-block characters. A picture only partly on screen shows its name
 until it's fully in view. Other attachments stay text labels; set
-`images = false` to show pictures as labels too.
+`images = false` to show pictures as labels too. Select a message with
+pictures and press Enter to view them full-pane (up to 1600 px); `o` saves the
+one shown to `~/Downloads` (the right way up, without metadata) and opens it.
 
 Mouse: click a chat to open it, click a pane to focus it (a click in the
 messages pane also selects that message), and scroll with the wheel. Because

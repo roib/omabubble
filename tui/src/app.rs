@@ -47,6 +47,11 @@ pub enum Effect {
     Disconnect,
     /// Persist recently used emojis.
     SaveRecents(Vec<String>),
+    /// Write a picture to the downloads folder and open it.
+    SavePicture {
+        name: String,
+        jpeg: Vec<u8>,
+    },
     SaveHidden(HashMap<i64, i64>),
 }
 
@@ -183,7 +188,22 @@ enum ReqKind {
     Since,
     Send { local_id: u64 },
     MarkRead,
-    Image { attachment_id: i64 },
+    Image { attachment_id: i64, px: u32 },
+}
+
+/// The full-pane picture viewer: one message's pictures, one at a time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Viewer {
+    /// (attachment id, file name)
+    pub pictures: Vec<(i64, String)>,
+    pub index: usize,
+}
+
+impl Viewer {
+    pub fn current(&self) -> (i64, &str) {
+        let (id, name) = &self.pictures[self.index];
+        (*id, name)
+    }
 }
 
 pub struct App {
@@ -245,6 +265,7 @@ pub struct App {
     focused: bool,
     pub rects: Rects,
     pub pics: Pics,
+    pub viewer: Option<Viewer>,
     /// Owned here so the list's scroll offset is known for clicks.
     pub list_state: ListState,
 }
@@ -298,6 +319,7 @@ impl App {
             focused: true,
             rects: Rects::default(),
             pics: Pics::default(),
+            viewer: None,
             list_state: ListState::default(),
         }
     }
@@ -450,7 +472,7 @@ impl App {
                     self.flash_msg(err, now);
                 }
                 // Shown in place as the picture's label; no flash.
-                ReqKind::Image { attachment_id } => self.pics.failed(attachment_id),
+                ReqKind::Image { attachment_id, px } => self.pics.failed_at((attachment_id, px)),
                 _ => self.flash_msg(err, now),
             }
             return;
@@ -474,9 +496,11 @@ impl App {
             }
             // Counts change through the `read` event the bridge broadcasts.
             ReqKind::MarkRead => {}
-            ReqKind::Image { attachment_id } => match r.image {
-                Some(b64) => self.pics.loaded(attachment_id, &b64, r.orientation),
-                None => self.pics.failed(attachment_id),
+            ReqKind::Image { attachment_id, px } => match r.image {
+                Some(b64) => self
+                    .pics
+                    .loaded_at((attachment_id, px), &b64, r.orientation),
+                None => self.pics.failed_at((attachment_id, px)),
             },
         }
     }
@@ -495,13 +519,13 @@ impl App {
     pub fn tick(&mut self, now: Instant) {
         // Pictures the last frame found on screen and not yet loaded.
         if self.status == Status::Connected {
-            for attachment_id in self.pics.take_wanted() {
+            for (attachment_id, px) in self.pics.take_wanted() {
                 self.request(
                     Command::Image {
                         attachment_id,
-                        max_px: pics::THUMB_PX,
+                        max_px: px,
                     },
-                    ReqKind::Image { attachment_id },
+                    ReqKind::Image { attachment_id, px },
                 );
             }
         }
@@ -542,6 +566,11 @@ impl App {
 
     fn flash_msg(&mut self, msg: impl Into<String>, now: Instant) {
         self.flash = Some((msg.into(), now, FLASH_FOR));
+    }
+
+    /// A status-bar message from outside the app logic (e.g. a saved file).
+    pub fn notice(&mut self, msg: impl Into<String>, now: Instant) {
+        self.flash_msg(msg, now);
     }
 
     fn hint(&mut self, msg: impl Into<String>, now: Instant) {
@@ -1011,6 +1040,62 @@ impl App {
     }
 
     /// Selected placeholder in the messages pane, if any.
+    /// Whether Enter on the selection would open the picture viewer.
+    pub fn selected_has_pictures(&self) -> bool {
+        self.pics.enabled()
+            && self.view.as_ref().and_then(|v| v.sel).is_some_and(|sel| {
+                matches!(self.items().get(sel), Some(Item::Msg(m))
+                    if m.attachments.iter().any(|a| a.image && a.id > 0))
+            })
+    }
+
+    /// Opens the selected message's pictures full-pane; false if it has none.
+    fn open_viewer(&mut self) -> bool {
+        if !self.pics.enabled() {
+            return false;
+        }
+        let Some(sel) = self.view.as_ref().and_then(|v| v.sel) else {
+            return false;
+        };
+        let Some(Item::Msg(m)) = self.items().into_iter().nth(sel) else {
+            return false;
+        };
+        let pictures: Vec<(i64, String)> = m
+            .attachments
+            .iter()
+            .filter(|a| a.image && a.id > 0)
+            .map(|a| (a.id, a.name.clone()))
+            .collect();
+        if pictures.is_empty() {
+            return false;
+        }
+        self.viewer = Some(Viewer { pictures, index: 0 });
+        true
+    }
+
+    fn viewer_key(&mut self, key: KeyEvent, now: Instant) {
+        let Some(v) = &mut self.viewer else { return };
+        let n = v.pictures.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.viewer = None,
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('j') if n > 1 => {
+                v.index = (v.index + 1) % n
+            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('k') if n > 1 => {
+                v.index = (v.index + n - 1) % n
+            }
+            KeyCode::Char('o') => {
+                let (id, name) = v.current();
+                let name = name.to_string();
+                match self.pics.jpeg((id, pics::FULL_PX)) {
+                    Some(jpeg) => self.effects.push(Effect::SavePicture { name, jpeg }),
+                    None => self.flash_msg("still loading", now),
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn selected_pending(&self) -> Option<u64> {
         let sel = self.view.as_ref()?.sel?;
         match self.items().get(sel)? {
@@ -1301,6 +1386,9 @@ impl App {
         if self.popup.is_some() {
             return self.popup_key(key, now);
         }
+        if self.viewer.is_some() {
+            return self.viewer_key(key, now);
+        }
         if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
             self.focus = Focus::Input;
             self.emoji = Some(EmojiPopup::default());
@@ -1568,6 +1656,7 @@ impl App {
                     self.focus = Focus::List;
                 }
             }
+            KeyCode::Enter if self.open_viewer() => {}
             KeyCode::Enter => {
                 // A failed or unconfirmed message goes back into the input to resend.
                 let restore = self.selected_pending().and_then(|id| {
@@ -2814,6 +2903,71 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn picture(id: i64, name: &str) -> proto::Attachment {
+        proto::Attachment {
+            name: name.into(),
+            mime: Some("image/jpeg".into()),
+            id,
+            image: true,
+        }
+    }
+
+    #[test]
+    fn viewer_opens_cycles_saves_and_closes() {
+        let (mut app, now) = connected();
+        app.pics.picker = Some(ratatui_image::picker::Picker::halfblocks());
+        app.on_key(key(KeyCode::Enter), now);
+        let id = requests(&mut app)[0].0;
+        let mut photos = msg(11, 1, false, "");
+        photos.kind = Kind::Attachment;
+        photos.attachments = vec![picture(3, "a.heic"), picture(4, "b.heic")];
+        app.on_line(
+            &line(&Response {
+                id,
+                messages: Some(vec![msg(10, 1, false, "hi"), photos]),
+                ..Default::default()
+            }),
+            now,
+        );
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Tab), now); // Messages, last item selected
+
+        app.on_key(key(KeyCode::Enter), now);
+        let v = app.viewer.clone().unwrap();
+        assert_eq!((v.pictures.len(), v.current()), (2, (3, "a.heic")));
+        app.on_key(key(KeyCode::Right), now);
+        assert_eq!(app.viewer.as_ref().unwrap().current().0, 4);
+        app.on_key(key(KeyCode::Right), now);
+        assert_eq!(app.viewer.as_ref().unwrap().current().0, 3, "wraps around");
+
+        // `o` before the full-size picture arrives: a notice, no save.
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert!(
+            app.effects
+                .iter()
+                .all(|e| !matches!(e, Effect::SavePicture { .. }))
+        );
+        app.pics
+            .loaded_at((3, pics::FULL_PX), &pics::tests::png_b64(8, 4), None);
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert!(
+            matches!(app.effects.last(), Some(Effect::SavePicture { name, .. }) if name == "a.heic")
+        );
+
+        // Keys go to the viewer, not the conversation, until it closes.
+        app.on_key(key(KeyCode::Char('x')), now);
+        assert!(app.viewer.is_some());
+        app.on_key(key(KeyCode::Esc), now);
+        assert!(app.viewer.is_none());
+        assert_eq!(app.focus, Focus::Messages);
+
+        // A message without pictures: Enter still goes to the input.
+        app.on_key(key(KeyCode::Char('k')), now);
+        app.on_key(key(KeyCode::Enter), now);
+        assert!(app.viewer.is_none());
+        assert_eq!(app.focus, Focus::Input);
     }
 
     #[test]
