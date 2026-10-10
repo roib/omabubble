@@ -7,6 +7,8 @@ when it changes: a TUI and a bridge must speak the same one.
 
 ## Unreleased
 
+## 0.1.0 (2026-10-10)
+
 First release. Protocol version 4.
 
 - Chats and messages from Messages on a Mac, read through `imsg-bridge` over
