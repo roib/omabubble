@@ -44,6 +44,33 @@ same app, so Full Disk Access and Automation survive updates. Unsigned builds
 lose both permissions every time the binary changes. The binary and the
 LaunchAgent plist are root-owned on purpose; see Security below.
 
+`imsg --version` and `imsg-bridge --version` show the release and the commit
+they were built from, e.g. `0.1.0 (455dfb1)`; `-dirty` marks a build with
+uncommitted changes.
+
+## Releases
+
+imsg and imsg-bridge are released together under one version (see
+`CHANGELOG.md`) and published to artifacts.example.com:
+
+```sh
+# Linux: install or update the TUI (to ~/.local/bin/imsg)
+curl -fsSL https://artifacts.example.com/install.sh | sh -s -- imsg
+
+# Mac, in a terminal (asks for your password): install the latest bridge,
+# or name a version, e.g. --release v0.1.0
+~/src/appl-tui/scripts/mac/install-bridge.sh --release
+```
+
+A published bridge is installed only if its checksum matches and it was
+signed with this Mac's identity, so Full Disk Access carries over.
+
+To make a release, add notes under `## Unreleased` in `CHANGELOG.md`, then
+run `scripts/release.sh 0.2.0` on a clean `main`. It tests, commits and tags
+`v0.2.0`, builds the TUI here and the bridge on the Mac (signed there),
+publishes both with `artifact-push`, and pushes to GitHub. Published versions
+can't be replaced, so a broken release is fixed with a new patch version.
+
 ## Mac setup (once)
 
 1. **Install the service:** run `scripts/mac/install-bridge.sh` in a
