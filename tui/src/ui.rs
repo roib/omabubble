@@ -881,6 +881,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::new().white().on_red(),
         )],
     };
+    if let Some(skew) = app.clock_skew {
+        left.push(Span::styled(
+            format!(
+                " ⚠ Mac clock {} {} ",
+                skew_text(skew),
+                if skew < 0 { "behind" } else { "ahead" }
+            ),
+            Style::new().black().on_yellow(),
+        ));
+    }
     if let Some((msg, _, _)) = &app.flash {
         left.push(Span::styled(
             format!(" ✓ {msg} "),
@@ -1067,6 +1077,16 @@ fn draw_emoji_picker(f: &mut Frame, app: &App) {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// "14h 55m", "3m", "45s"
+fn skew_text(seconds: i64) -> String {
+    let s = seconds.unsigned_abs();
+    match (s / 3600, (s % 3600) / 60) {
+        (0, 0) => format!("{s}s"),
+        (0, m) => format!("{m}m"),
+        (h, m) => format!("{h}h {m}m"),
+    }
+}
 
 fn local(ts: i64) -> Option<DateTime<Local>> {
     Local.timestamp_opt(ts, 0).single()
@@ -1336,6 +1356,13 @@ mod tests {
             assert_eq!(lines.len(), 1);
             assert!(at.is_empty());
         }
+    }
+
+    #[test]
+    fn skew_texts() {
+        assert_eq!(skew_text(-53_717), "14h 55m");
+        assert_eq!(skew_text(200), "3m");
+        assert_eq!(skew_text(-45), "45s");
     }
 
     #[test]

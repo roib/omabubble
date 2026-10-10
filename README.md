@@ -64,6 +64,11 @@ LaunchAgent plist are root-owned on purpose; see Security below.
      launches Messages through AppleScript when needed.
    - Turn on "Prevent automatic sleeping" (Energy settings) or run `caffeinate`.
    - For SMS (green bubble) contacts, turn on Text Message Forwarding to this Mac on the iPhone.
+   - **If the Mac is a VM:** its clock stops while the host sleeps and macOS
+     doesn't catch up, which delays messages. `scripts/mac/install-timesync.sh`
+     installs a root job that sets the clock from time.apple.com every 2
+     minutes. imsg shows `⚠ Mac clock … behind` in the status bar when the
+     Mac's clock is more than 2 minutes off.
 5. **Restricted SSH key:** this key can only reach the bridge.
    - On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/imsg -N ''`
    - On the Mac, add one line to `~/.ssh/authorized_keys`:

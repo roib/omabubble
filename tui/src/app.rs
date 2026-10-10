@@ -28,6 +28,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(150);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const FLASH_FOR: Duration = Duration::from_secs(3);
+/// How far the Mac's clock may be off (seconds) before the status bar warns.
+const CLOCK_SKEW_WARN: i64 = 120;
 /// Typing pauses this long before the input is saved as a draft.
 const DRAFT_SAVE_AFTER: Duration = Duration::from_secs(2);
 const HINT_FOR: Duration = Duration::from_secs(12);
@@ -249,6 +251,8 @@ pub struct App {
     last_hidden: Option<Vec<i64>>,
 
     pub status: Status,
+    /// The Mac's clock minus ours, when it's off by more than a couple of minutes.
+    pub clock_skew: Option<i64>,
     backoff: Duration,
     last_bridge_error: Option<String>,
     /// (message, shown at, how long).
@@ -312,6 +316,7 @@ impl App {
             hidden: HashMap::new(),
             last_hidden: None,
             status: Status::Connecting,
+            clock_skew: None,
             backoff: FIRST_BACKOFF,
             last_bridge_error: None,
             flash: None,
@@ -382,7 +387,15 @@ impl App {
 
     fn on_event(&mut self, event: Event, now: Instant) {
         match event {
-            Event::Hello { version, bridge } => {
+            Event::Hello {
+                version,
+                bridge,
+                time,
+            } => {
+                // Over SSH a second or two of difference is normal.
+                self.clock_skew = time
+                    .map(|t| t - chrono::Utc::now().timestamp())
+                    .filter(|d| d.abs() > CLOCK_SKEW_WARN);
                 if version != PROTOCOL_VERSION {
                     self.status = Status::Fatal(format!(
                         "bridge {bridge} speaks protocol v{version}, this imsg speaks v{PROTOCOL_VERSION}: \
@@ -2086,6 +2099,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -2116,6 +2130,7 @@ mod tests {
             &line(&Event::Hello {
                 version: 99,
                 bridge: "9.9".into(),
+                time: None,
             }),
             Instant::now(),
         );
@@ -2314,6 +2329,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -2481,6 +2497,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -2652,6 +2669,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -2729,6 +2747,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -3014,6 +3033,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -3205,6 +3225,35 @@ mod tests {
     }
 
     #[test]
+    fn wrong_mac_clock_is_flagged() {
+        let mut app = App::new(&cfg());
+        let now = Instant::now();
+        let hello = |t: i64| {
+            line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "t".into(),
+                time: Some(chrono::Utc::now().timestamp() + t),
+            })
+        };
+        app.on_line(&hello(-53_717), now);
+        assert!(
+            app.clock_skew
+                .is_some_and(|d| (-53_720..=-53_710).contains(&d))
+        );
+        app.on_line(&hello(3), now);
+        assert_eq!(app.clock_skew, None, "a few seconds is fine");
+        app.on_line(
+            &line(&Event::Hello {
+                version: PROTOCOL_VERSION,
+                bridge: "old".into(),
+                time: None,
+            }),
+            now,
+        );
+        assert_eq!(app.clock_skew, None, "an older bridge doesn't say");
+    }
+
+    #[test]
     fn names_flag_is_sent() {
         let now = Instant::now();
         let mut app = App::new(&Config {
@@ -3215,6 +3264,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -3230,6 +3280,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -3327,6 +3378,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );
@@ -3346,6 +3398,7 @@ mod tests {
             &line(&Event::Hello {
                 version: PROTOCOL_VERSION,
                 bridge: "t".into(),
+                time: None,
             }),
             now,
         );

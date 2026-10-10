@@ -171,6 +171,7 @@ fn handle_client(stream: UnixStream, shared: &Arc<Shared>, hub: &Hub) -> Result<
     let hello = Event::Hello {
         version: PROTOCOL_VERSION,
         bridge: env!("CARGO_PKG_VERSION").into(),
+        time: Some(crate::db::now_unix()),
     };
     tx.send(serde_json::to_string(&hello)?)?;
 

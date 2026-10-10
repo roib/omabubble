@@ -92,6 +92,9 @@ pub enum Event {
     Hello {
         version: u32,
         bridge: String,
+        /// The Mac's clock (unix seconds), so clients can spot a wrong one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<i64>,
     },
     NewMessage {
         message: Message,
