@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.2.0 (2026-10-10)
+
 - **imsg is now omabubble.** The commands are `omabubble` and
   `omabubble-bridge`. The first start moves `~/.config/imsg` and
   `~/.local/state/imsg` to `omabubble`, and the bridge moves its read marks
