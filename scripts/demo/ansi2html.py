@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Turn `tmux capture-pane -e -p` output into a standalone HTML terminal window.
 
-Usage: ansi2html.py < capture.txt > shot.html
+Usage: ansi2html.py [picture] < capture.txt > shot.html
 Colors are the Kanagawa palette (Omarchy's default foot theme).
+
+Inside tmux, omabubble draws pictures with half-block characters. Given the
+picture's file, the half-block area is covered with the real image, as a
+terminal with a graphics protocol (foot, kitty, Ghostty) shows it.
 """
 
 import html
 import re
 import sys
+from pathlib import Path
 
 from wcwidth import wcwidth
 
@@ -156,11 +161,39 @@ def line_html(line, pen):
     return "".join(out)
 
 
+HALF_BLOCKS = {"\u2580", "\u2584"}
+
+
+def picture_box(lines):
+    """(row, col, rows, cols) of the cells drawn with half-blocks, or None."""
+    pen = Pen()
+    hits = []
+    for row, line in enumerate(lines):
+        col = 0
+        for _, cl, w in cells(line, pen):
+            if cl in HALF_BLOCKS:
+                hits.append((row, col))
+            col += w
+    if not hits:
+        return None
+    rows = [r for r, _ in hits]
+    cols = [c for _, c in hits]
+    return min(rows), min(cols), max(rows) - min(rows) + 1, max(cols) - min(cols) + 1
+
+
 def main():
     lines = sys.stdin.read().rstrip("\n").split("\n")
     pen = Pen()
     # No newlines between rows: inside `white-space: pre` they'd add blank lines.
     body = "".join(f"<div>{line_html(l, pen) or '&nbsp;'}</div>" for l in lines)
+    box = picture_box(lines) if len(sys.argv) > 1 else None
+    if box:
+        row, col, rows, cols = box
+        src = html.escape(Path(sys.argv[1]).resolve().as_uri())
+        body += (
+            f'<img src="{src}" style="position:absolute; left:{col}ch; top:{row * 1.25}em;'
+            f' width:{cols}ch; height:{rows * 1.25}em; object-fit:fill">'
+        )
     print(f"""<!doctype html>
 <meta charset="utf-8">
 <style>
@@ -168,7 +201,7 @@ def main():
   .win {{ display: inline-block; margin: 24px; padding: 14px 16px; background: {BG};
           border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }}
   .term {{ font: 14px/1.25 "JetBrainsMono Nerd Font", "Noto Color Emoji", monospace;
-           white-space: pre; color: {FG}; }}
+           white-space: pre; color: {FG}; position: relative; }}
   .term div {{ height: 1.25em; }}
   .w {{ display: inline-block; width: 2ch; text-align: center; }}
 </style>

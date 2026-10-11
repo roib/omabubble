@@ -21,9 +21,10 @@ Apple Inc.
   </tr>
 </table>
 
-The screenshots use made-up demo data, and show pictures as half-blocks;
-terminals with a graphics protocol (foot, kitty, Ghostty) show them at full
-resolution. `scripts/demo/run.sh` runs omabubble against the demo data with a
+The screenshots use made-up demo data. They show pictures the way terminals
+with a graphics protocol (foot, kitty, Ghostty) do; other terminals, and
+anything inside tmux, get coarse half-block characters instead.
+`scripts/demo/run.sh` runs omabubble against the demo data with a
 local bridge, so no Mac is needed (sends are dry runs), and
 `scripts/demo/screenshots.sh` regenerates the images.
 

@@ -28,14 +28,16 @@ type_text() { tmux -L "$SOCK" send-keys -l "$1"; sleep 0.6; }
 
 shot() {
     tmux -L "$SOCK" capture-pane -p -e -N > "$DIR/$1.txt"
-    python3 scripts/demo/ansi2html.py < "$DIR/$1.txt" > "$DIR/$1.html"
+    # $2: the picture on screen, drawn over its half-blocks at full resolution.
+    python3 scripts/demo/ansi2html.py ${2:+"$2"} < "$DIR/$1.txt" > "$DIR/$1.html"
     chromium --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=2 \
         --default-background-color=00000000 --window-size=1300,1000 \
         --screenshot="$DIR/$1.png" "file://$DIR/$1.html" 2>/dev/null
-    # Trim the transparent margin but keep room for the shadow.
-    # Lossless WebP: text stays crisp and the files are much smaller than PNG.
-    magick "$DIR/$1.png" -trim -bordercolor none -border 24 \
-        -define webp:lossless=true "$OUT/$1.webp"
+    # Trim the transparent margin but keep room for the shadow. Lossless WebP
+    # keeps text crisp and is much smaller than PNG; with a photo on screen,
+    # high-quality lossy is a fraction of the size and looks the same.
+    if [ -n "${2:-}" ]; then webp="-quality 92"; else webp="-define webp:lossless=true"; fi
+    magick "$DIR/$1.png" -trim -bordercolor none -border 24 $webp "$OUT/$1.webp"
     echo "wrote $OUT/$1.webp"
 }
 
@@ -45,11 +47,10 @@ sleep 1.5
 # Keep drafts out of the shots: a draft adds a ✏ to the chat list, which tmux
 # and the TUI measure at different widths, so the borders would shift.
 
-# A picture in a conversation, shown as a thumbnail (half-blocks here; real
-# terminals with a graphics protocol show it at full resolution).
+# A picture in a conversation, shown as a thumbnail.
 keys j j j j
 keys Enter
-shot picture
+shot picture "$DIR/Attachments/00/A2/IMG_3310.jpg"
 
 # The same picture in the full-pane viewer.
 keys Escape
@@ -57,7 +58,7 @@ keys Tab
 keys k
 keys k
 keys Enter
-shot viewer
+shot viewer "$DIR/Attachments/00/A2/IMG_3310.jpg"
 
 # A conversation: Maya's chat open, a reply being typed.
 keys Escape
