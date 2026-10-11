@@ -194,7 +194,8 @@ pub mod tests {
     pub fn fixture_dir() -> PathBuf {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("imsg-contacts-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omabubble-contacts-{}-{n}", std::process::id()));
         let src = dir.join("Sources/ABCD-1234");
         std::fs::create_dir_all(&src).unwrap();
         let conn = Connection::open(src.join(DB_NAME)).unwrap();

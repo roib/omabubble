@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn marks_only_rise_and_persist() {
-        let dir = std::env::temp_dir().join(format!("imsg-marks-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("omabubble-marks-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("read.json");
         let _ = std::fs::remove_file(&path);

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sign an imsg-bridge binary with the local signing identity (see
+# Sign an omabubble-bridge binary with the local signing identity (see
 # make-signing-cert.sh). Signing every build with the same identity makes
 # macOS treat new versions as the same app, so Full Disk Access survives.
 #
@@ -17,8 +17,13 @@ if [ "${1:-}" = --check ]; then
     shift
 fi
 BIN=$1
-NAME="imsg-bridge local signing"
-DIR="$HOME/.config/imsg-signing"
+NAME="omabubble-bridge local signing"
+DIR="$HOME/.config/omabubble-signing"
+# An identity made before the rename (0.2.0) keeps its imsg names.
+if [ ! -d "$DIR" ] && [ -d "$HOME/.config/imsg-signing" ]; then
+    NAME="imsg-bridge local signing"
+    DIR="$HOME/.config/imsg-signing"
+fi
 KC="$DIR/signing.keychain-db"
 
 if [ ! -f "$KC" ]; then
@@ -43,13 +48,13 @@ HASH=$(security find-certificate -c "$NAME" -Z "$KC" | awk '/SHA-1 hash/ {print 
 if [ -n "$CHECK" ]; then
     codesign --verify --strict "$BIN"
     # The designated requirement names the signing certificate's SHA-1:
-    #   identifier "com.imsg.bridge" and certificate leaf = H"…"
+    #   identifier "com.omabubble.bridge" and certificate leaf = H"…"
     leaf=$(codesign -d -r- "$BIN" 2>&1 | sed -n 's/.*certificate leaf = H"\([0-9a-fA-F]*\)".*/\1/p')
     if [ "$(echo "$leaf" | tr a-f A-F)" != "$(echo "$HASH" | tr a-f A-F)" ]; then
-        echo "$BIN is not signed with this Mac's imsg-bridge identity" >&2
+        echo "$BIN is not signed with this Mac's omabubble-bridge identity" >&2
         exit 1
     fi
     exit 0
 fi
 
-codesign --force --sign "$HASH" --keychain "$KC" --identifier com.imsg.bridge "$BIN"
+codesign --force --sign "$HASH" --keychain "$KC" --identifier com.omabubble.bridge "$BIN"

@@ -196,11 +196,11 @@ pub mod tests {
         }
     }
 
-    /// Checks a real file: `IMSG_SAMPLE_JPEG=photo.jpg cargo test -p bridge -- --ignored`.
+    /// Checks a real file: `OMABUBBLE_SAMPLE_JPEG=photo.jpg cargo test -p bridge -- --ignored`.
     #[test]
     #[ignore]
     fn sample_from_env() {
-        let path = std::env::var("IMSG_SAMPLE_JPEG").expect("set IMSG_SAMPLE_JPEG");
+        let path = std::env::var("OMABUBBLE_SAMPLE_JPEG").expect("set OMABUBBLE_SAMPLE_JPEG");
         let (out, o) = sanitize(&std::fs::read(path).unwrap()).unwrap();
         println!(
             "orientation: {o:?}; Exif left: {}",

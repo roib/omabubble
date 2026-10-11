@@ -200,7 +200,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             })
             .unwrap_or_else(|| " … ".into()),
         Some(Target::Draft(h)) => format!(" {h} (new) "),
-        None => " imsg ".into(),
+        None => " omabubble ".into(),
     };
     let mut block = Block::bordered().title(title).border_style(border(focused));
     if focused {
@@ -893,7 +893,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some(bridge) = &app.bridge_mismatch {
         left.push(Span::styled(
-            format!(" ⚠ bridge {bridge}, imsg {} ", env!("CARGO_PKG_VERSION")),
+            format!(
+                " ⚠ bridge {bridge}, omabubble {} ",
+                env!("CARGO_PKG_VERSION")
+            ),
             Style::new().black().on_yellow(),
         ));
     }

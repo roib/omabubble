@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-time: create a self-signed code-signing identity for imsg-bridge.
+# One-time: create a self-signed code-signing identity for omabubble-bridge.
 #
 # Signing every build with the same identity makes macOS treat rebuilds as the
 # same app, so Full Disk Access and Automation permissions survive updates.
@@ -8,14 +8,17 @@
 # give, and it keeps the password out of `ps` when scripts unlock it.
 set -eu
 
-NAME="imsg-bridge local signing"
-DIR="$HOME/.config/imsg-signing"
+NAME="omabubble-bridge local signing"
+DIR="$HOME/.config/omabubble-signing"
 KC="$DIR/signing.keychain-db"
 
-if [ -f "$KC" ]; then
-    echo "already set up: $KC"
-    exit 0
-fi
+# An identity made before the rename (0.2.0) is still used; see sign-bridge.sh.
+for kc in "$KC" "$HOME/.config/imsg-signing/signing.keychain-db"; do
+    if [ -f "$kc" ]; then
+        echo "already set up: $kc"
+        exit 0
+    fi
+done
 
 mkdir -p "$DIR"
 chmod 700 "$DIR"

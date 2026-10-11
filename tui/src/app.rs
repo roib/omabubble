@@ -253,7 +253,7 @@ pub struct App {
     pub status: Status,
     /// The Mac's clock minus ours, when it's off by more than a couple of minutes.
     pub clock_skew: Option<i64>,
-    /// The bridge's version, when it's a different release from this imsg.
+    /// The bridge's version, when it's a different release from this omabubble.
     pub bridge_mismatch: Option<String>,
     backoff: Duration,
     last_bridge_error: Option<String>,
@@ -402,12 +402,12 @@ impl App {
                 // Same protocol is enough to work; a different release is
                 // still worth knowing about. Builds of one release differ
                 // only in the commit, which isn't compared.
-                self.bridge_mismatch = (release(&bridge) != release(env!("IMSG_VERSION")))
+                self.bridge_mismatch = (release(&bridge) != release(env!("OMABUBBLE_VERSION")))
                     .then(|| release(&bridge).to_string());
                 if version != PROTOCOL_VERSION {
                     self.status = Status::Fatal(format!(
-                        "bridge {bridge} speaks protocol v{version}, this imsg speaks v{PROTOCOL_VERSION}: \
-                         rebuild/reinstall imsg-bridge on the Mac"
+                        "bridge {bridge} speaks protocol v{version}, this omabubble speaks v{PROTOCOL_VERSION}: \
+                         rebuild/reinstall omabubble-bridge on the Mac"
                     ));
                     self.effects.push(Effect::Disconnect);
                     return;
@@ -944,9 +944,9 @@ impl App {
                     None => sender,
                 };
                 let (title, body) = if self.notification_detail {
-                    (format!("imsg: {title}"), preview(&m))
+                    (format!("omabubble: {title}"), preview(&m))
                 } else {
-                    ("imsg".to_string(), "New message".to_string())
+                    ("omabubble".to_string(), "New message".to_string())
                 };
                 self.effects.push(Effect::Notify {
                     title,
@@ -2821,7 +2821,7 @@ mod tests {
             now,
         );
         assert!(app.effects.iter().any(
-            |e| matches!(e, Effect::Notify { title, .. } if title == "imsg: Alex (Weekend Crew)")
+            |e| matches!(e, Effect::Notify { title, .. } if title == "omabubble: Alex (Weekend Crew)")
         ));
     }
 
@@ -2838,7 +2838,7 @@ mod tests {
             now,
         );
         assert!(app.effects.iter().any(
-            |e| matches!(e, Effect::Notify { body, title, .. } if body == "New message" && title == "imsg")
+            |e| matches!(e, Effect::Notify { body, title, .. } if body == "New message" && title == "omabubble")
         ));
     }
 

@@ -1,9 +1,9 @@
 #!/bin/sh
-# Run imsg against made-up demo data, entirely on this machine: a local
-# imsg-bridge serves a demo chat.db (sends are dry runs), and imsg connects to
+# Run omabubble against made-up demo data, entirely on this machine: a local
+# omabubble-bridge serves a demo chat.db (sends are dry runs), and omabubble connects to
 # it with its own config and state, so your real setup is never touched.
 #
-#   scripts/demo/run.sh            build, start the bridge, run imsg
+#   scripts/demo/run.sh            build, start the bridge, run omabubble
 #   scripts/demo/run.sh --setup D  only build into D and start the bridge
 #                                  (prints its PID; used by screenshots.sh)
 set -eu
@@ -51,10 +51,10 @@ setup() {
 
     cargo build -q -p bridge -p tui
     cat > "$dir/config.toml" <<EOF
-command = ["$ROOT/target/debug/imsg-bridge", "connect", "--socket", "$dir/bridge.sock"]
+command = ["$ROOT/target/debug/omabubble-bridge", "connect", "--socket", "$dir/bridge.sock"]
 notifications = false
 EOF
-    "$ROOT/target/debug/imsg-bridge" serve --db "$dir/chat.db" --socket "$dir/bridge.sock" \
+    "$ROOT/target/debug/omabubble-bridge" serve --db "$dir/chat.db" --socket "$dir/bridge.sock" \
         --contacts "$dir/contacts" --dry-run-send >"$dir/bridge.log" 2>&1 &
     BRIDGE=$!
     i=0
@@ -74,4 +74,4 @@ fi
 DIR=$(mktemp -d)
 setup "$DIR"
 trap 'kill $BRIDGE 2>/dev/null; rm -rf "$DIR"' EXIT INT TERM
-XDG_STATE_HOME="$DIR/state" "$ROOT/target/debug/imsg" --config "$DIR/config.toml"
+XDG_STATE_HOME="$DIR/state" XDG_CONFIG_HOME="$DIR/xdg-config" "$ROOT/target/debug/omabubble" --config "$DIR/config.toml"

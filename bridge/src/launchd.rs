@@ -1,4 +1,4 @@
-//! `imsg-bridge install` / `uninstall`: manage the LaunchAgent.
+//! `omabubble-bridge install` / `uninstall`: manage the LaunchAgent.
 //!
 //! The binary and the plist are root-owned (`/usr/local/bin`,
 //! `/Library/LaunchAgents`) so that code running as the user can't replace
@@ -11,8 +11,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const LABEL: &str = "com.imsg.bridge";
-const SYSTEM_PLIST: &str = "/Library/LaunchAgents/com.imsg.bridge.plist";
+const LABEL: &str = "com.omabubble.bridge";
+const SYSTEM_PLIST: &str = "/Library/LaunchAgents/com.omabubble.bridge.plist";
 
 /// The user the agent runs for: the account behind `sudo`.
 struct Target {
@@ -25,7 +25,7 @@ fn target_user() -> Result<Target> {
     if unsafe { libc::getuid() } != 0 {
         let exe = std::env::current_exe()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "imsg-bridge".into());
+            .unwrap_or_else(|_| "omabubble-bridge".into());
         bail!(
             "needs root so the binary and plist can't be replaced by user-level code: run `sudo {exe} install`"
         );
@@ -90,23 +90,30 @@ pub fn plist(exe: &str, log: &str) -> String {
     )
 }
 
-fn bootout(uid: u32) {
+fn bootout(uid: u32, label: &str) {
     let _ = Command::new("launchctl")
-        .args(["bootout", &format!("{}/{LABEL}", domain(uid))])
+        .args(["bootout", &format!("{}/{label}", domain(uid))])
         .stderr(std::process::Stdio::null())
         .status();
 }
 
-/// An earlier version installed a user-owned agent; unload and remove it.
-fn remove_legacy_user_agent(t: &Target) {
-    let legacy = t
-        .home
-        .join("Library/LaunchAgents")
-        .join(format!("{LABEL}.plist"));
-    if legacy.exists() {
-        bootout(t.uid);
-        if std::fs::remove_file(&legacy).is_ok() {
-            println!("Removed old user agent {}", legacy.display());
+/// The agent's label before 0.2.0, when the bridge was imsg-bridge.
+const OLD_LABEL: &str = "com.imsg.bridge";
+
+/// Unload and remove agents from before the rename: the root-owned one, and
+/// the user-owned one that even earlier versions installed.
+fn remove_old_agents(t: &Target) {
+    let plists = [
+        PathBuf::from(format!("/Library/LaunchAgents/{OLD_LABEL}.plist")),
+        t.home
+            .join(format!("Library/LaunchAgents/{OLD_LABEL}.plist")),
+    ];
+    if plists.iter().any(|p| p.exists()) {
+        bootout(t.uid, OLD_LABEL);
+    }
+    for p in plists {
+        if p.exists() && std::fs::remove_file(&p).is_ok() {
+            println!("Removed old agent {}", p.display());
         }
     }
 }
@@ -120,20 +127,20 @@ pub fn install() -> Result<()> {
     let exe = std::env::current_exe()?.canonicalize()?;
     if std::fs::metadata(&exe)?.uid() != 0 {
         bail!(
-            "{} is not owned by root; install it with `sudo install -o root -g wheel -m 0755 … /usr/local/bin/imsg-bridge` first",
+            "{} is not owned by root; install it with `sudo install -o root -g wheel -m 0755 … /usr/local/bin/omabubble-bridge` first",
             exe.display()
         );
     }
-    let log = t.home.join("Library/Logs/imsg-bridge.log");
+    let log = t.home.join("Library/Logs/omabubble-bridge.log");
 
-    remove_legacy_user_agent(&t);
+    remove_old_agents(&t);
     let path = Path::new(SYSTEM_PLIST);
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(path, plist(&exe.to_string_lossy(), &log.to_string_lossy()))?;
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
 
     // Reinstall cleanly if it was already loaded (fails harmlessly on first install).
-    bootout(t.uid);
+    bootout(t.uid, LABEL);
     let status = Command::new("launchctl")
         .args(["bootstrap", &domain(t.uid)])
         .arg(path)
@@ -160,8 +167,8 @@ pub fn uninstall() -> Result<()> {
         bail!("uninstall only works on macOS");
     }
     let t = target_user()?;
-    bootout(t.uid);
-    remove_legacy_user_agent(&t);
+    bootout(t.uid, LABEL);
+    remove_old_agents(&t);
     let path = Path::new(SYSTEM_PLIST);
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -175,11 +182,11 @@ mod tests {
     #[test]
     fn plist_has_absolute_args() {
         let p = super::plist(
-            "/usr/local/bin/imsg-bridge",
-            "/Users/you/Library/Logs/imsg-bridge.log",
+            "/usr/local/bin/omabubble-bridge",
+            "/Users/you/Library/Logs/omabubble-bridge.log",
         );
         assert!(p.contains(
-            "<string>/usr/local/bin/imsg-bridge</string>\n        <string>serve</string>"
+            "<string>/usr/local/bin/omabubble-bridge</string>\n        <string>serve</string>"
         ));
         assert!(!p.contains('~'));
     }

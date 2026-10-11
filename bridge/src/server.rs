@@ -1,4 +1,4 @@
-//! `imsg-bridge serve`: Unix socket server with one thread per client.
+//! `omabubble-bridge serve`: Unix socket server with one thread per client.
 
 use crate::contacts;
 use crate::db::Db;
@@ -80,7 +80,7 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
             opts.db.display(),
             std::env::current_exe()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "imsg-bridge".into())
+                .unwrap_or_else(|_| "omabubble-bridge".into())
         )
     })?;
 
@@ -140,7 +140,7 @@ fn bind(socket: &Path) -> Result<UnixListener> {
     if socket.exists() {
         if UnixStream::connect(socket).is_ok() {
             bail!(
-                "another imsg-bridge is already serving {}",
+                "another omabubble-bridge is already serving {}",
                 socket.display()
             );
         }
@@ -170,7 +170,7 @@ fn handle_client(stream: UnixStream, shared: &Arc<Shared>, hub: &Hub) -> Result<
 
     let hello = Event::Hello {
         version: PROTOCOL_VERSION,
-        bridge: env!("IMSG_VERSION").into(),
+        bridge: env!("OMABUBBLE_VERSION").into(),
         time: Some(crate::db::now_unix()),
     };
     tx.send(serde_json::to_string(&hello)?)?;
@@ -425,7 +425,7 @@ mod tests {
             )
             .unwrap();
         let socket = std::env::temp_dir()
-            .join(format!("imsg-test-{}", std::process::id()))
+            .join(format!("omabubble-test-{}", std::process::id()))
             .join("bridge.sock");
         let _ = std::fs::remove_file(socket.with_file_name("read.json"));
         let opts = ServeOpts {

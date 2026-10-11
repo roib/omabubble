@@ -24,14 +24,14 @@ use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
-    name = "imsg",
-    version = env!("IMSG_VERSION"),
-    about = "iMessage in the terminal, via imsg-bridge on a Mac"
+    name = "omabubble",
+    version = env!("OMABUBBLE_VERSION"),
+    about = "iMessage in the terminal, via omabubble-bridge on a Mac"
 )]
 struct Cli {
     /// SSH host to connect to (overrides `host` in the config).
     host: Option<String>,
-    /// Config file [default: ~/.config/imsg/config.toml]
+    /// Config file [default: ~/.config/omabubble/config.toml]
     #[arg(long)]
     config: Option<PathBuf>,
 }
@@ -45,6 +45,7 @@ enum AppEvent {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    migrate_from_imsg();
     let path = match cli.config {
         Some(p) => p,
         None => config::default_path()?,
@@ -225,8 +226,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     Ok(())
 }
 
+/// Before 0.2.0 this was imsg: carry its config and state folders over once.
+fn migrate_from_imsg() {
+    for base in [dirs::config_dir(), dirs::state_dir()]
+        .into_iter()
+        .flatten()
+    {
+        let (old, new) = (base.join("imsg"), base.join("omabubble"));
+        if old.is_dir() && !new.exists() {
+            let _ = std::fs::rename(&old, &new);
+        }
+    }
+}
+
 fn drafts_path() -> Option<PathBuf> {
-    dirs::state_dir().map(|d| d.join("imsg/drafts.json"))
+    dirs::state_dir().map(|d| d.join("omabubble/drafts.json"))
 }
 
 fn load_drafts() -> HashMap<String, String> {
@@ -260,12 +274,12 @@ fn save_drafts(drafts: &HashMap<String, String>) {
 }
 
 fn recents_path() -> Option<PathBuf> {
-    dirs::state_dir().map(|d| d.join("imsg/recent_emoji"))
+    dirs::state_dir().map(|d| d.join("omabubble/recent_emoji"))
 }
 
 /// One `chat_id rowid` pair per line.
 fn hidden_path() -> Option<PathBuf> {
-    dirs::state_dir().map(|d| d.join("imsg/hidden_chats"))
+    dirs::state_dir().map(|d| d.join("omabubble/hidden_chats"))
 }
 
 fn load_hidden() -> HashMap<i64, i64> {

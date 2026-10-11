@@ -1,15 +1,15 @@
 // Build script shared by tui and bridge (each crate's build.rs includes it).
 //
-// Sets IMSG_VERSION to "<version> (<commit>)", e.g. "0.1.0 (455dfb1)", with
+// Sets OMABUBBLE_VERSION to "<version> (<commit>)", e.g. "0.1.0 (455dfb1)", with
 // "-dirty" when tracked files had uncommitted changes, so a local build is
 // never mistaken for a release. Where there's no git checkout (the copy
-// rsynced to the Mac), the commit comes from IMSG_COMMIT, or is left out.
+// rsynced to the Mac), the commit comes from OMABUBBLE_COMMIT, or is left out.
 
 use std::process::Command;
 
 fn main() {
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
-    let commit = std::env::var("IMSG_COMMIT")
+    let commit = std::env::var("OMABUBBLE_COMMIT")
         .ok()
         .filter(|c| !c.is_empty())
         .or_else(git_commit);
@@ -17,8 +17,8 @@ fn main() {
         Some(c) => format!("{version} ({c})"),
         None => version,
     };
-    println!("cargo:rustc-env=IMSG_VERSION={full}");
-    println!("cargo:rerun-if-env-changed=IMSG_COMMIT");
+    println!("cargo:rustc-env=OMABUBBLE_VERSION={full}");
+    println!("cargo:rerun-if-env-changed=OMABUBBLE_COMMIT");
     for path in [
         "src",
         "../proto/src",

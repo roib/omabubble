@@ -140,7 +140,7 @@ impl Drop for Slot<'_> {
 fn sips(src: &Path, max_px: u32) -> Result<Vec<u8>> {
     static N: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "imsg-img-{}-{}",
+        "omabubble-img-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
@@ -195,7 +195,7 @@ pub mod tests {
     pub fn fixture() -> (PathBuf, Images) {
         static N: AtomicU64 = AtomicU64::new(0);
         let home = std::env::temp_dir().join(format!(
-            "imsg-images-{}-{}",
+            "omabubble-images-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::SeqCst)
         ));

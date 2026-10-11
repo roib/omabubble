@@ -1,29 +1,31 @@
-# imsg
+# omabubble
 
-iMessage in a terminal on a non-Apple machine. A Mac that stays signed in to
-Messages runs **`imsg-bridge`**. The Linux TUI **`imsg`** talks to it over SSH.
-Chats show Contacts names when the Mac has them, otherwise bare phone numbers
-and emails; `names = false` in the config shows handles only.
+iMessage in a terminal on [Omarchy](https://omarchy.org), or any other Linux
+machine. A Mac that stays signed in to Messages runs **`omabubble-bridge`**.
+The TUI **`omabubble`** talks to it over SSH. Chats show Contacts names when
+the Mac has them, otherwise bare phone numbers and emails; `names = false` in
+the config shows handles only. omabubble was called imsg until 0.2.0.
 
-imsg is an independent project, not affiliated with or endorsed by Apple.
-iMessage and Messages are trademarks of Apple Inc.
+omabubble is an independent project, not affiliated with or endorsed by Apple,
+and not an official Omarchy project. iMessage and Messages are trademarks of
+Apple Inc.
 
 ![A conversation: chat list on the left, messages with a reaction and read receipts on the right](docs/screenshots/chat.webp)
 
 ![A group chat with senders named from Contacts](docs/screenshots/group.webp)
 
-The screenshots use made-up demo data. `scripts/demo/run.sh` runs imsg against
+The screenshots use made-up demo data. `scripts/demo/run.sh` runs omabubble against
 that data with a local bridge, so no Mac is needed (sends are dry runs);
 `scripts/demo/screenshots.sh` regenerates the images.
 
 ```
-imsg (Linux) ──ssh, restricted key──> imsg-bridge connect ──unix socket──> imsg-bridge serve (LaunchAgent)
+omabubble (Linux) ──ssh, restricted key──> omabubble-bridge connect ──unix socket──> omabubble-bridge serve (LaunchAgent)
                                                                              ├─ reads ~/Library/Messages/chat.db (read-only)
                                                                              ├─ watches it with FSEvents, pushes new/edited/unsent messages
                                                                              └─ sends through Messages.app with osascript
 ```
 
-The only network port is SSH. Full Disk Access is granted to `imsg-bridge`
+The only network port is SSH. Full Disk Access is granted to `omabubble-bridge`
 alone, not to sshd.
 
 ## Build
@@ -32,7 +34,7 @@ The Rust version is pinned in `mise.toml`, and both machines use it via mise.
 
 ```sh
 # Linux: the TUI
-mise exec -- cargo build --release -p tui          # → target/release/imsg
+mise exec -- cargo build --release -p tui          # → target/release/omabubble
 
 # Mac, once: a self-signed code-signing identity (its own keychain, no prompts)
 ~/src/appl-tui/scripts/mac/make-signing-cert.sh
@@ -47,19 +49,19 @@ same app, so Full Disk Access and Automation survive updates. Unsigned builds
 lose both permissions every time the binary changes. The binary and the
 LaunchAgent plist are root-owned on purpose; see Security below.
 
-`imsg --version` and `imsg-bridge --version` show the release and the commit
+`omabubble --version` and `omabubble-bridge --version` show the release and the commit
 they were built from, e.g. `0.1.0 (455dfb1)`; `-dirty` marks a build with
 uncommitted changes.
 
 ## Releases
 
-imsg and imsg-bridge are released together under one version (see
+omabubble and omabubble-bridge are released together under one version (see
 `CHANGELOG.md`) and published to an artifacts site (`ARTIFACTS_URL`, served
 with the layout `artifact-push` and `install.sh` use):
 
 ```sh
-# Linux: install or update the TUI (to ~/.local/bin/imsg)
-curl -fsSL https://artifacts.example.com/install.sh | sh -s -- imsg
+# Linux: install or update the TUI (to ~/.local/bin/omabubble)
+curl -fsSL https://artifacts.example.com/install.sh | sh -s -- omabubble
 
 # Mac, in a terminal (asks for your password): install the latest bridge,
 # or name a version, e.g. --release v0.1.0
@@ -79,16 +81,16 @@ can't be replaced, so a broken release is fixed with a new patch version.
 ## Mac setup (once)
 
 1. **Install the service:** run `scripts/mac/install-bridge.sh` in a
-   terminal on the Mac. It puts the binary at `/usr/local/bin/imsg-bridge`
-   and the agent at `/Library/LaunchAgents/com.imsg.bridge.plist`, both
+   terminal on the Mac. It puts the binary at `/usr/local/bin/omabubble-bridge`
+   and the agent at `/Library/LaunchAgents/com.omabubble.bridge.plist`, both
    root-owned, and loads the agent into your login session. Logs go to
-   `~/Library/Logs/imsg-bridge.log`.
+   `~/Library/Logs/omabubble-bridge.log`.
 2. **Full Disk Access:** go to System Settings → Privacy & Security → Full
-   Disk Access, click **+**, and add `/usr/local/bin/imsg-bridge`
+   Disk Access, click **+**, and add `/usr/local/bin/omabubble-bridge`
    (⌘⇧G in the file picker to type the path). The agent retries every 10s
    and starts once this is granted.
 3. **Automation permission:** the first real send makes macOS ask whether
-   `imsg-bridge` may control Messages. Click Allow. If you miss the prompt,
+   `omabubble-bridge` may control Messages. Click Allow. If you miss the prompt,
    sends fail with `-1743`; turn it on under Privacy & Security → Automation.
 4. **Stay reachable:**
    - Keep the Mac logged in. Messages.app itself can stay closed: incoming
@@ -100,53 +102,53 @@ can't be replaced, so a broken release is fixed with a new patch version.
      a Mac): its clock stops while the host Mac sleeps and macOS doesn't
      catch up, which delays messages. `scripts/mac/install-timesync.sh`
      installs a root job that sets the clock from time.apple.com every 2
-     minutes. imsg shows `⚠ Mac clock … behind` in the status bar when the
+     minutes. omabubble shows `⚠ Mac clock … behind` in the status bar when the
      Mac's clock is more than 2 minutes off.
 5. **Restricted SSH key:** this key can only reach the bridge.
-   - On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/imsg -N ''`
+   - On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/omabubble -N ''`
    - On the Mac, add one line to `~/.ssh/authorized_keys`:
      ```
-     restrict,command="/usr/local/bin/imsg-bridge connect" ssh-ed25519 AAAA…(contents of ~/.ssh/imsg.pub)
+     restrict,command="/usr/local/bin/omabubble-bridge connect" ssh-ed25519 AAAA…(contents of ~/.ssh/omabubble.pub)
      ```
      `restrict` turns off pty, port/agent/X11 forwarding and `~/.ssh/rc`.
    - On Linux, add to `~/.ssh/config`:
      ```
-     Host mac-imsg
+     Host mac-omabubble
          HostName 127.0.0.1
          Port 2233
          User b
-         IdentityFile ~/.ssh/imsg
+         IdentityFile ~/.ssh/omabubble
          IdentitiesOnly yes
      ```
 
    For use away from home, use Tailscale and the Mac's Tailscale name rather
    than forwarding port 22 on your router.
 
-To remove the service, run `sudo imsg-bridge uninstall`.
+To remove the service, run `sudo omabubble-bridge uninstall`.
 
 **Re-granting permissions:** this is only needed if the binary's identity
 changes, for example after switching from unsigned to signed or recreating the
-certificate. Remove `imsg-bridge` from the Full Disk Access list and add it
+certificate. Remove `omabubble-bridge` from the Full Disk Access list and add it
 again, then allow the Automation prompt on the next send. Over VNC, this opens
 both windows for you:
-`open -R /usr/local/bin/imsg-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
+`open -R /usr/local/bin/omabubble-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
 
 ## Linux setup
 
-`~/.config/imsg/config.toml` (running `imsg` without one prints this sample):
+`~/.config/omabubble/config.toml` (running `omabubble` without one prints this sample):
 
 ```toml
-host = "mac-imsg"
+host = "mac-omabubble"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
-notifications = true    # notify-send for messages in chats you aren't looking at; on Hyprland, clicking one opens the chat in imsg's window
+notifications = true    # notify-send for messages in chats you aren't looking at; on Hyprland, clicking one opens the chat in omabubble's window
 notification_detail = true  # false: notifications say only "New message" (see Security)
 notification_seconds = 20   # how long banners stay up; 0 = until dismissed (Omarchy allows 8–30)
 bell = false
 # ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
-# remote_command = "/usr/local/bin/imsg-bridge connect"       # only for keys without a forced command
+# remote_command = "/usr/local/bin/omabubble-bridge connect"       # only for keys without a forced command
 ```
 
-Then run `imsg`, or `imsg <host>` to override the configured host.
+Then run `omabubble`, or `omabubble <host>` to override the configured host.
 
 ### One person, several handles
 
@@ -171,8 +173,8 @@ handles = ["+15551234567", "alex@example.com"]
 ```
 
 If a sent copy still lands in a sibling chat that isn't merged, the TUI counts
-it as sent and shows a hint naming the two handles. `imsg-bridge serve
---no-contacts` turns the Contacts lookup off, and `imsg-bridge query people`
+it as sent and shows a hint naming the two handles. `omabubble-bridge serve
+--no-contacts` turns the Contacts lookup off, and `omabubble-bridge query people`
 prints only counts.
 
 ## Keys
@@ -210,7 +212,7 @@ Unsent text stays with its chat: switch away and the chat list shows
 `✎ Draft: …` in place of the last message (or a `✎` after the name while it
 has unread messages); switch back and it's in the input again. Sending or
 emptying the input clears it. Drafts are saved to
-`~/.local/state/imsg/drafts.json` (readable only by you), about two seconds
+`~/.local/state/omabubble/drafts.json` (readable only by you), about two seconds
 after you stop typing and when you quit, so they survive restarts. They stay
 on this machine.
 
@@ -255,16 +257,16 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
 
 What the design protects against, and what it doesn't.
 
-- **Network:** the only inbound port is SSH, key-only, and the imsg key is
-  `restrict`ed to the forced command `imsg-bridge connect`: no shell, no pty,
+- **Network:** the only inbound port is SSH, key-only, and the omabubble key is
+  `restrict`ed to the forced command `omabubble-bridge connect`: no shell, no pty,
   no forwarding. The bridge's socket is local-only, 0600 in a 0700 directory.
   Use Tailscale for remote access rather than exposing SSH.
-- **The Linux box is fully trusted.** Whoever holds `~/.ssh/imsg` can read
+- **The Linux box is fully trusted.** Whoever holds `~/.ssh/omabubble` can read
   every message, see which handles Contacts groups together (and names, if
   `names = true`), and send as you. The key has no passphrase for
   convenience; treat the file accordingly.
 - **Same-user processes on the Mac can use the bridge.** Full Disk Access
-  belongs to `imsg-bridge`, and the bridge serves whatever connects to its
+  belongs to `omabubble-bridge`, and the bridge serves whatever connects to its
   socket. Other *users* are kept out by the socket permissions, but anything
   already running as you, with no Full Disk Access of its own, can connect,
   read all your messages and send through it. That is inherent to this
@@ -272,7 +274,7 @@ What the design protects against, and what it doesn't.
   Don't run the bridge on a Mac where you run software you don't trust.
 - **Root-owned binary and plist.** Because the signing key lives in a
   keychain on the same account, code running as you could re-sign its own
-  binary as `com.imsg.bridge`. It can't swap it into `/usr/local/bin` or
+  binary as `com.omabubble.bridge`. It can't swap it into `/usr/local/bin` or
   `/Library/LaunchAgents` without your password, which is why those are
   root-owned. Keep SIP enabled; nothing here needs it off.
 - **Logs** never contain message text or recipients: send failures are
@@ -301,14 +303,14 @@ Everything can run against a fake database, without touching real messages:
 
 ```sh
 sqlite3 /tmp/fx.db < bridge/tests/fixtures/make_fixture.sql
-cargo run -p bridge -- serve --db /tmp/fx.db --socket /tmp/imsg/b.sock --dry-run-send
+cargo run -p bridge -- serve --db /tmp/fx.db --socket /tmp/omabubble/b.sock --dry-run-send
 # TUI config for local testing:
-#   command = ["/path/to/target/debug/imsg-bridge", "connect", "--socket", "/tmp/imsg/b.sock"]
-cargo run -p tui -- --config /tmp/imsg-dev.toml
+#   command = ["/path/to/target/debug/omabubble-bridge", "connect", "--socket", "/tmp/omabubble/b.sock"]
+cargo run -p tui -- --config /tmp/omabubble-dev.toml
 ```
 
 - `--dry-run-send` logs the exact osascript argv instead of running it.
-- `imsg-bridge query --db <path> chats|history <id>|since <rowid>` prints raw JSON.
+- `omabubble-bridge query --db <path> chats|history <id>|since <rowid>` prints raw JSON.
 - `cargo test --workspace` covers:
   - DB queries, attributedBody decoding and change detection
   - the socket server

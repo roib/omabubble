@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install imsg-bridge, then (re)load the service. Run on the Mac, in a
+# Install omabubble-bridge, then (re)load the service. Run on the Mac, in a
 # terminal: the install step asks for your password, because the binary and
 # the LaunchAgent plist are root-owned so that code running as you can't swap
 # in a replacement and inherit Full Disk Access.
@@ -8,7 +8,7 @@
 #   scripts/mac/install-bridge.sh --release [VER]    install a published release
 #                                                    (default: the latest), e.g. v0.1.0
 #
-# Releases come from $ARTIFACTS_URL/imsg-bridge/ (set in local.env) and are
+# Releases come from $ARTIFACTS_URL/omabubble-bridge/ (set in local.env) and are
 # installed only if their checksum matches and they were signed with this
 # Mac's signing identity (scripts/release.sh builds and signs them here).
 set -eu
@@ -17,7 +17,7 @@ cd "$(dirname "$0")/../.."
 
 MISE=${MISE:-/opt/local/bin/mise}
 BASE=${ARTIFACTS_URL:-https://artifacts.example.com}
-DEST=/usr/local/bin/imsg-bridge
+DEST=/usr/local/bin/omabubble-bridge
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -29,17 +29,17 @@ if [ "${1:-}" = --release ]; then
         arm64) arch=arm64 ;;
         *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
     esac
-    file=imsg-bridge-darwin-$arch
-    curl -fsSL -o "$TMP/$file" "$BASE/imsg-bridge/$version/$file" \
-        || { echo "no $file for imsg-bridge $version" >&2; exit 1; }
-    curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/imsg-bridge/$version/SHA256SUMS"
+    file=omabubble-bridge-darwin-$arch
+    curl -fsSL -o "$TMP/$file" "$BASE/omabubble-bridge/$version/$file" \
+        || { echo "no $file for omabubble-bridge $version" >&2; exit 1; }
+    curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/omabubble-bridge/$version/SHA256SUMS"
     (cd "$TMP" && grep " $file\$" SHA256SUMS | shasum -a 256 -c -)
     scripts/mac/sign-bridge.sh --check "$TMP/$file"
     BIN=$TMP/$file
 else
     "$MISE" exec -- cargo build --release -p bridge
-    BIN=$TMP/imsg-bridge
-    cp target/release/imsg-bridge "$BIN"
+    BIN=$TMP/omabubble-bridge
+    cp target/release/omabubble-bridge "$BIN"
     status=0
     scripts/mac/sign-bridge.sh "$BIN" || status=$?
     if [ "$status" = 3 ]; then
@@ -55,6 +55,16 @@ sudo install -d -o root -g wheel -m 0755 "$(dirname "$DEST")"
 sudo install -o root -g wheel -m 0755 "$BIN" "$DEST"
 sudo "$DEST" install
 echo "installed $DEST ($("$DEST" --version))"
+
+# Before 0.2.0 the bridge was imsg-bridge. Keep that path working as a link,
+# so authorized_keys lines with the old forced command still connect;
+# relaying needs no Full Disk Access, so the link is enough.
+OLD_DEST=/usr/local/bin/imsg-bridge
+if [ -e "$OLD_DEST" ] && [ ! -L "$OLD_DEST" ]; then
+    sudo ln -sf "$(basename "$DEST")" "$OLD_DEST"
+    echo "$OLD_DEST now points to $DEST. Change the forced commands in"
+    echo "~/.ssh/authorized_keys to \"$DEST connect\", then: sudo rm $OLD_DEST"
+fi
 
 OLD="$HOME/.local/bin/imsg-bridge"
 if [ -f "$OLD" ]; then

@@ -622,7 +622,8 @@ pub mod tests {
     pub fn fixture_db() -> PathBuf {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("imsg-fixture-{}-{n}.db", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("omabubble-fixture-{}-{n}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(include_str!("../tests/fixtures/make_fixture.sql"))
@@ -854,7 +855,7 @@ pub mod tests {
 
     #[test]
     fn reports_missing_columns() {
-        let path = std::env::temp_dir().join(format!("imsg-bad-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("omabubble-bad-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         Connection::open(&path)
             .unwrap()

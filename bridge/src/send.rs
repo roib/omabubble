@@ -143,7 +143,7 @@ impl Sender {
         let err = err.trim();
         if err.contains("-1743") {
             bail!(
-                "not allowed to control Messages (-1743): allow imsg-bridge under Privacy & Security → Automation"
+                "not allowed to control Messages (-1743): allow omabubble-bridge under Privacy & Security → Automation"
             );
         }
         bail!(

@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 /// that closed it; clicking the banner invokes the `default` action.
 pub fn desktop(title: &str, body: &str, seconds: u32, on_click: impl FnOnce() + Send + 'static) {
     let mut cmd = Command::new("notify-send");
-    cmd.args(["-a", "imsg", "-A", "default=Open"]);
+    cmd.args(["-a", "omabubble", "-A", "default=Open"]);
     if seconds == 0 {
         // Only critical notifications stay up indefinitely on most desktops.
         cmd.args(["-u", "critical"]);

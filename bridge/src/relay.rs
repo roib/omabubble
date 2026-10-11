@@ -1,4 +1,4 @@
-//! `imsg-bridge connect`: relays stdio to the running service's socket.
+//! `omabubble-bridge connect`: relays stdio to the running service's socket.
 //! This is what the restricted SSH key runs; it never touches chat.db.
 
 use proto::Event;
@@ -10,7 +10,7 @@ pub fn connect(socket: &Path) -> ! {
     let stream = match UnixStream::connect(socket) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("imsg-bridge connect: {}: {e}", socket.display());
+            eprintln!("omabubble-bridge connect: {}: {e}", socket.display());
             let msg = "bridge service not running".to_string();
             let ev = serde_json::to_string(&Event::Error { msg }).unwrap_or_default();
             let _ = writeln!(io::stdout(), "{ev}");
@@ -21,7 +21,7 @@ pub fn connect(socket: &Path) -> ! {
     let mut to_server = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("imsg-bridge connect: {e}");
+            eprintln!("omabubble-bridge connect: {e}");
             std::process::exit(1);
         }
     };

@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// SSH host (alias from ~/.ssh/config) whose key's forced command runs `imsg-bridge connect`.
+    /// SSH host (alias from ~/.ssh/config) whose key's forced command runs `omabubble-bridge connect`.
     pub host: String,
     /// Extra ssh arguments, e.g. ["-p", "2233"].
     pub ssh_args: Vec<String>,
-    /// Remote command, for keys without a forced command, e.g. "/Users/you/.local/bin/imsg-bridge connect".
+    /// Remote command, for keys without a forced command, e.g. "/Users/you/.local/bin/omabubble-bridge connect".
     pub remote_command: Option<String>,
     /// Run this instead of ssh (local testing).
     pub command: Option<Vec<String>>,
@@ -62,16 +62,16 @@ impl Default for Config {
     }
 }
 
-pub const SAMPLE: &str = r#"# imsg configuration
+pub const SAMPLE: &str = r#"# omabubble configuration
 
-# SSH host alias (see ~/.ssh/config) for the Mac running imsg-bridge.
-host = "mac-imsg"
+# SSH host alias (see ~/.ssh/config) for the Mac running omabubble-bridge.
+host = "mac-omabubble"
 
 # Extra ssh arguments, if the host alias doesn't cover them.
 # ssh_args = ["-p", "2233"]
 
 # Only needed when the SSH key has no forced command:
-# remote_command = "/Users/you/.local/bin/imsg-bridge connect"
+# remote_command = "/Users/you/.local/bin/omabubble-bridge connect"
 
 # Prepended to 10-digit numbers typed in the new-conversation popup.
 country_code = "1"
@@ -106,7 +106,7 @@ names = true
 pub fn default_path() -> Result<PathBuf> {
     Ok(dirs::config_dir()
         .context("no config directory")?
-        .join("imsg/config.toml"))
+        .join("omabubble/config.toml"))
 }
 
 /// `Ok(None)` when the file doesn't exist.
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn sample_parses() {
         let c: super::Config = toml::from_str(super::SAMPLE).unwrap();
-        assert_eq!(c.host, "mac-imsg");
+        assert_eq!(c.host, "mac-omabubble");
         assert_eq!(c.country_code, "1");
         assert!(c.notifications && !c.bell && c.remote_command.is_none());
         let with_person: super::Config = toml::from_str(&format!(

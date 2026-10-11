@@ -1,6 +1,6 @@
 #!/bin/sh
 # Regenerate the README screenshots (docs/screenshots/*.webp) from demo data.
-# Runs imsg headless in tmux, so nothing appears on screen.
+# Runs omabubble headless in tmux, so nothing appears on screen.
 # Needs: sqlite3, tmux, python3 with wcwidth, chromium, ImageMagick.
 set -eu
 cd "$(dirname "$0")/../.."
@@ -8,7 +8,7 @@ ROOT=$PWD
 OUT=docs/screenshots
 COLS=112
 ROWS=30
-SOCK=imsg-demo-$$
+SOCK=omabubble-demo-$$
 
 DIR=$(mktemp -d)
 BRIDGE=$(scripts/demo/run.sh --setup "$DIR")
@@ -20,7 +20,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 tmux -L "$SOCK" -f /dev/null new-session -d -x $COLS -y $ROWS \
-    "XDG_STATE_HOME=$DIR/state $ROOT/target/debug/imsg --config $DIR/config.toml"
+    "XDG_STATE_HOME=$DIR/state XDG_CONFIG_HOME=$DIR/xdg-config $ROOT/target/debug/omabubble --config $DIR/config.toml"
 tmux -L "$SOCK" set -g status off
 
 keys() { tmux -L "$SOCK" send-keys "$@"; sleep 0.6; }

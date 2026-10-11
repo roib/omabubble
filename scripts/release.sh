@@ -1,5 +1,5 @@
 #!/bin/sh
-# Release imsg and imsg-bridge together as one version.
+# Release omabubble and omabubble-bridge together as one version.
 #
 #   scripts/release.sh 0.2.0
 #
@@ -7,24 +7,24 @@
 #    notes under "## Unreleased" in CHANGELOG.md, tests pass.
 # 2. Sets the version in Cargo.toml, dates the changelog section, commits
 #    "Release 0.2.0" and tags v0.2.0.
-# 3. Builds imsg here, and imsg-bridge on the Mac, where it's signed with the
+# 3. Builds omabubble here, and omabubble-bridge on the Mac, where it's signed with the
 #    Mac's signing identity so Full Disk Access survives the update.
 # 4. Publishes both with artifact-push to artifacts.example.com
-#    (imsg/v0.2.0/ and imsg-bridge/v0.2.0/, with release notes), then pushes
+#    (omabubble/v0.2.0/ and omabubble-bridge/v0.2.0/, with release notes), then pushes
 #    the commit and tag to GitHub.
 #
 # Published versions are immutable: fix a bad release with a new patch version.
 #
 # Settings come from the environment or from local.env in the repo root (not
-# committed; see local.env.example): IMSG_MAC and IMSG_MAC_PORT, the Mac to
+# committed; see local.env.example): OMABUBBLE_MAC and OMABUBBLE_MAC_PORT, the Mac to
 # build the bridge on, reached with your normal SSH key, not the bridge-only
 # one; ARTIFACTS_URL, the artifacts site.
 set -eu
 cd "$(dirname "$0")/.."
 [ ! -f local.env ] || . ./local.env
 
-MAC=${IMSG_MAC:-you@your-mac}
-MAC_PORT=${IMSG_MAC_PORT:-2233}
+MAC=${OMABUBBLE_MAC:-you@your-mac}
+MAC_PORT=${OMABUBBLE_MAC_PORT:-2233}
 MAC_DIR=src/appl-tui
 MAC_MISE=/opt/local/bin/mise
 SITE=${ARTIFACTS_URL:-https://artifacts.example.com}
@@ -46,7 +46,7 @@ tag=v$version
 git fetch -q origin main
 [ "$(git rev-list --count HEAD..origin/main)" = 0 ] || die "main is behind origin/main; pull first"
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "$tag is already tagged"
-for tool in imsg imsg-bridge; do
+for tool in omabubble omabubble-bridge; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/$tool/$tag/")
     [ "$code" = 404 ] || die "$tool $tag is already on $SITE (HTTP $code)"
 done
@@ -67,7 +67,7 @@ awk -v head="## $version ($(date +%F))" '
     { print }' CHANGELOG.md >CHANGELOG.md.new
 mv CHANGELOG.md.new CHANGELOG.md
 git commit -q -am "Release $version"
-git tag -a "$tag" -m "imsg $version" -m "$notes"
+git tag -a "$tag" -m "omabubble $version" -m "$notes"
 commit=$(git rev-parse --short=7 HEAD)
 
 # Until the publish step, a failure leaves only the local commit and tag.
@@ -79,42 +79,42 @@ dist=target/dist/$tag
 rm -rf "$dist"
 mkdir -p "$dist"
 
-echo "== building imsg"
+echo "== building omabubble"
 mise exec -- cargo build --release -q -p tui
-cp target/release/imsg "$dist/imsg-linux-amd64"
-want="imsg $version ($commit)"
-got=$("$dist/imsg-linux-amd64" --version)
-[ "$got" = "$want" ] || die "imsg says \"$got\", expected \"$want\""
+cp target/release/omabubble "$dist/omabubble-linux-amd64"
+want="omabubble $version ($commit)"
+got=$("$dist/omabubble-linux-amd64" --version)
+[ "$got" = "$want" ] || die "omabubble says \"$got\", expected \"$want\""
 
-echo "== building and signing imsg-bridge on the Mac"
+echo "== building and signing omabubble-bridge on the Mac"
 rsync -a --delete --exclude target --exclude .git -e "ssh -p $MAC_PORT" ./ "$MAC:$MAC_DIR/"
-out=target/release/imsg-bridge-darwin-amd64
+out=target/release/omabubble-bridge-darwin-amd64
 mac "set -e
     cd $MAC_DIR
-    IMSG_COMMIT=$commit MISE_QUIET=1 $MAC_MISE exec -- cargo build --release -q -p bridge
-    cp target/release/imsg-bridge $out
+    OMABUBBLE_COMMIT=$commit MISE_QUIET=1 $MAC_MISE exec -- cargo build --release -q -p bridge
+    cp target/release/omabubble-bridge $out
     scripts/mac/sign-bridge.sh $out
     scripts/mac/sign-bridge.sh --check $out" || die "building or signing the bridge failed"
-want="imsg-bridge $version ($commit)"
+want="omabubble-bridge $version ($commit)"
 got=$(mac "$MAC_DIR/$out --version")
-[ "$got" = "$want" ] || die "imsg-bridge says \"$got\", expected \"$want\""
+[ "$got" = "$want" ] || die "omabubble-bridge says \"$got\", expected \"$want\""
 scp -q -P "$MAC_PORT" "$MAC:$MAC_DIR/$out" "$dist/"
 
-printf '# imsg %s\n%s\n' "$version" "$notes" >"$dist/RELEASE-NOTES.md"
+printf '# omabubble %s\n%s\n' "$version" "$notes" >"$dist/RELEASE-NOTES.md"
 
 # -------------------------------------------------------------- publish
 echo "== publishing"
 published=1
-artifact-push imsg "$tag" "$dist/imsg-linux-amd64" "$dist/RELEASE-NOTES.md"
-artifact-push imsg-bridge "$tag" "$dist/imsg-bridge-darwin-amd64" "$dist/RELEASE-NOTES.md"
+artifact-push omabubble "$tag" "$dist/omabubble-linux-amd64" "$dist/RELEASE-NOTES.md"
+artifact-push omabubble-bridge "$tag" "$dist/omabubble-bridge-darwin-amd64" "$dist/RELEASE-NOTES.md"
 git push -q origin main "$tag"
 
 cat <<EOF
 
-Released imsg $version ($commit).
+Released omabubble $version ($commit).
 
-Install the TUI (to ~/.local/bin/imsg):
-  curl -fsSL $SITE/install.sh | sh -s -- imsg $tag
+Install the TUI (to ~/.local/bin/omabubble):
+  curl -fsSL $SITE/install.sh | sh -s -- omabubble $tag
 Install the bridge, in a terminal (asks for the Mac password):
   ssh -t -p $MAC_PORT $MAC '~/$MAC_DIR/scripts/mac/install-bridge.sh --release $tag'
 EOF

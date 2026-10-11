@@ -1,12 +1,22 @@
 # Changelog
 
-imsg and imsg-bridge are released together under one version. A new minor
-version (0.2 → 0.3) adds features or changes the bridge protocol; a patch
-version (0.2.0 → 0.2.1) only fixes things. The protocol version is listed
-when it changes: a TUI and a bridge must speak the same one.
+omabubble and omabubble-bridge (imsg before 0.2.0) are released together
+under one version. A new minor version (0.2 → 0.3) adds features or changes
+the bridge protocol; a patch version (0.2.0 → 0.2.1) only fixes things. The
+protocol version is listed when it changes: a TUI and a bridge must speak the
+same one.
 
 ## Unreleased
 
+- **imsg is now omabubble.** The commands are `omabubble` and
+  `omabubble-bridge`. The first start moves `~/.config/imsg` and
+  `~/.local/state/imsg` to `omabubble`, and the bridge moves its read marks
+  the same way. On the Mac, `install-bridge.sh` replaces the `com.imsg.bridge`
+  service with `com.omabubble.bridge` and keeps `/usr/local/bin/imsg-bridge`
+  as a link, so existing `authorized_keys` lines keep working. Grant Full Disk
+  Access to `/usr/local/bin/omabubble-bridge` once (it's a new path), and
+  allow Automation again on the first send. `install-timesync.sh` replaces
+  `com.imsg.timesync` the same way. Protocol version unchanged (4).
 - `release.sh` and `install-bridge.sh` read the Mac and the artifacts site
   from `local.env` (see `local.env.example`) instead of built-in defaults.
 

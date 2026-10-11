@@ -24,9 +24,9 @@ macro_rules! log {
 
 #[derive(Parser)]
 #[command(
-    name = "imsg-bridge",
-    version = env!("IMSG_VERSION"),
-    about = "iMessage bridge for the imsg TUI"
+    name = "omabubble-bridge",
+    version = env!("OMABUBBLE_VERSION"),
+    about = "iMessage bridge for the omabubble TUI"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,7 +40,7 @@ enum Cmd {
         /// Messages database [default: ~/Library/Messages/chat.db]
         #[arg(long)]
         db: Option<PathBuf>,
-        /// Unix socket path [default: ~/Library/Application Support/imsg/bridge.sock]
+        /// Unix socket path [default: ~/Library/Application Support/omabubble/bridge.sock]
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Log sends instead of running osascript.
@@ -101,9 +101,13 @@ fn default_db() -> Result<PathBuf> {
 }
 
 fn default_socket() -> Result<PathBuf> {
-    Ok(dirs::data_dir()
-        .context("no data directory")?
-        .join("imsg/bridge.sock"))
+    let data = dirs::data_dir().context("no data directory")?;
+    // Before 0.2.0 this was imsg: carry its folder (read marks) over once.
+    let (old, new) = (data.join("imsg"), data.join("omabubble"));
+    if old.is_dir() && !new.exists() {
+        let _ = std::fs::rename(&old, &new);
+    }
+    Ok(new.join("bridge.sock"))
 }
 
 fn main() -> Result<()> {

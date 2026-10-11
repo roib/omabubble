@@ -98,7 +98,7 @@ impl Watch {
         }
 
         // Chats read on the phone (or anywhere Messages syncs): tell every
-        // client, the same way a read in one imsg is shared with the others.
+        // client, the same way a read in one omabubble is shared with the others.
         let pass_start = crate::db::unix_to_apple_ns(now);
         for (chat_id, rowid) in self.db.read_since(floor, self.last_pass - READ_SLACK_NS)? {
             if self
