@@ -4,7 +4,7 @@ iMessage in a terminal on [Omarchy](https://omarchy.org), or any other Linux
 machine. A Mac that stays signed in to Messages runs **`omabubble-bridge`**.
 The TUI **`omabubble`** talks to it over SSH. Chats show Contacts names when
 the Mac has them, otherwise bare phone numbers and emails; `names = false` in
-the config shows handles only. omabubble was called imsg until 0.2.0.
+the config shows handles only.
 
 omabubble is an independent project, not affiliated with or endorsed by Apple,
 and not an official Omarchy project. iMessage and Messages are trademarks of
