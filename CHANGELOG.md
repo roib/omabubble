@@ -8,6 +8,14 @@ same one.
 
 ## Unreleased
 
+- The one-time moves from imsg are gone, so omabubble never touches files of
+  other programs named imsg. Coming from 0.1.0, install 0.2.0 first, or move
+  the folders by hand: `~/.config/imsg` and `~/.local/state/imsg` to
+  `omabubble`, and on the Mac `~/Library/Application Support/imsg` to
+  `omabubble` and `~/.config/imsg-signing` to `omabubble-signing`; then
+  remove the `com.imsg.bridge` and `com.imsg.timesync` jobs.
+- `sign-bridge.sh` uses the certificate in `~/.config/omabubble-signing`
+  whatever its name.
 - `release.sh` keeps its build copy on the Mac in
   `~/Library/Caches/omabubble/release` (was `~/src/appl-tui`); set
   `OMABUBBLE_MAC_DIR` in `local.env` to change it.

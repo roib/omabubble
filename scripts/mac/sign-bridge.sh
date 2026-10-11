@@ -17,13 +17,7 @@ if [ "${1:-}" = --check ]; then
     shift
 fi
 BIN=$1
-NAME="omabubble-bridge local signing"
 DIR="$HOME/.config/omabubble-signing"
-# An identity made before the rename (0.2.0) keeps its imsg names.
-if [ ! -d "$DIR" ] && [ -d "$HOME/.config/imsg-signing" ]; then
-    NAME="imsg-bridge local signing"
-    DIR="$HOME/.config/imsg-signing"
-fi
 KC="$DIR/signing.keychain-db"
 
 if [ ! -f "$KC" ]; then
@@ -42,8 +36,10 @@ security unlock-keychain -p "" "$KC"
 if ! security list-keychains -d user | grep -qF "$KC"; then
     eval "security list-keychains -d user -s $(security list-keychains -d user | tr '\n' ' ') \"$KC\""
 fi
-# The certificate is self-signed (untrusted), so sign by fingerprint, not name.
-HASH=$(security find-certificate -c "$NAME" -Z "$KC" | awk '/SHA-1 hash/ {print $3}')
+# The certificate is self-signed (untrusted), so sign by fingerprint, not
+# name. The keychain holds only this one certificate.
+HASH=$(security find-certificate -a -Z "$KC" | awk '/SHA-1 hash/ {print $3; exit}')
+[ -n "$HASH" ] || { echo "no certificate in $KC" >&2; exit 3; }
 
 if [ -n "$CHECK" ]; then
     codesign --verify --strict "$BIN"

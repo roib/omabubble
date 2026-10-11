@@ -101,13 +101,9 @@ fn default_db() -> Result<PathBuf> {
 }
 
 fn default_socket() -> Result<PathBuf> {
-    let data = dirs::data_dir().context("no data directory")?;
-    // Before 0.2.0 this was imsg: carry its folder (read marks) over once.
-    let (old, new) = (data.join("imsg"), data.join("omabubble"));
-    if old.is_dir() && !new.exists() {
-        let _ = std::fs::rename(&old, &new);
-    }
-    Ok(new.join("bridge.sock"))
+    Ok(dirs::data_dir()
+        .context("no data directory")?
+        .join("omabubble/bridge.sock"))
 }
 
 fn main() -> Result<()> {

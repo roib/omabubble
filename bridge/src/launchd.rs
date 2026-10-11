@@ -97,27 +97,6 @@ fn bootout(uid: u32, label: &str) {
         .status();
 }
 
-/// The agent's label before 0.2.0, when the bridge was imsg-bridge.
-const OLD_LABEL: &str = "com.imsg.bridge";
-
-/// Unload and remove agents from before the rename: the root-owned one, and
-/// the user-owned one that even earlier versions installed.
-fn remove_old_agents(t: &Target) {
-    let plists = [
-        PathBuf::from(format!("/Library/LaunchAgents/{OLD_LABEL}.plist")),
-        t.home
-            .join(format!("Library/LaunchAgents/{OLD_LABEL}.plist")),
-    ];
-    if plists.iter().any(|p| p.exists()) {
-        bootout(t.uid, OLD_LABEL);
-    }
-    for p in plists {
-        if p.exists() && std::fs::remove_file(&p).is_ok() {
-            println!("Removed old agent {}", p.display());
-        }
-    }
-}
-
 pub fn install() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("install only works on macOS");
@@ -133,7 +112,6 @@ pub fn install() -> Result<()> {
     }
     let log = t.home.join("Library/Logs/omabubble-bridge.log");
 
-    remove_old_agents(&t);
     let path = Path::new(SYSTEM_PLIST);
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(path, plist(&exe.to_string_lossy(), &log.to_string_lossy()))?;
@@ -168,7 +146,6 @@ pub fn uninstall() -> Result<()> {
     }
     let t = target_user()?;
     bootout(t.uid, LABEL);
-    remove_old_agents(&t);
     let path = Path::new(SYSTEM_PLIST);
     if path.exists() {
         std::fs::remove_file(path)?;

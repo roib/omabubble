@@ -45,7 +45,6 @@ enum AppEvent {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    migrate_from_imsg();
     let path = match cli.config {
         Some(p) => p,
         None => config::default_path()?,
@@ -224,19 +223,6 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
     save_drafts(&app.drafts);
     conn.stop();
     Ok(())
-}
-
-/// Before 0.2.0 this was imsg: carry its config and state folders over once.
-fn migrate_from_imsg() {
-    for base in [dirs::config_dir(), dirs::state_dir()]
-        .into_iter()
-        .flatten()
-    {
-        let (old, new) = (base.join("imsg"), base.join("omabubble"));
-        if old.is_dir() && !new.exists() {
-            let _ = std::fs::rename(&old, &new);
-        }
-    }
 }
 
 fn drafts_path() -> Option<PathBuf> {

@@ -12,13 +12,10 @@ NAME="omabubble-bridge local signing"
 DIR="$HOME/.config/omabubble-signing"
 KC="$DIR/signing.keychain-db"
 
-# An identity made before the rename (0.2.0) is still used; see sign-bridge.sh.
-for kc in "$KC" "$HOME/.config/imsg-signing/signing.keychain-db"; do
-    if [ -f "$kc" ]; then
-        echo "already set up: $kc"
-        exit 0
-    fi
-done
+if [ -f "$KC" ]; then
+    echo "already set up: $KC"
+    exit 0
+fi
 
 mkdir -p "$DIR"
 chmod 700 "$DIR"

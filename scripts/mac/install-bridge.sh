@@ -55,20 +55,3 @@ sudo install -d -o root -g wheel -m 0755 "$(dirname "$DEST")"
 sudo install -o root -g wheel -m 0755 "$BIN" "$DEST"
 sudo "$DEST" install
 echo "installed $DEST ($("$DEST" --version))"
-
-# Before 0.2.0 the bridge was imsg-bridge. Keep that path working as a link,
-# so authorized_keys lines with the old forced command still connect;
-# relaying needs no Full Disk Access, so the link is enough.
-OLD_DEST=/usr/local/bin/imsg-bridge
-if [ -e "$OLD_DEST" ] && [ ! -L "$OLD_DEST" ]; then
-    sudo ln -sf "$(basename "$DEST")" "$OLD_DEST"
-    echo "$OLD_DEST now points to $DEST. Change the forced commands in"
-    echo "~/.ssh/authorized_keys to \"$DEST connect\", then: sudo rm $OLD_DEST"
-fi
-
-OLD="$HOME/.local/bin/imsg-bridge"
-if [ -f "$OLD" ]; then
-    rm -f "$OLD"
-    echo "removed old user-owned copy $OLD"
-    echo "Update ~/.ssh/authorized_keys to: restrict,command=\"$DEST connect\" …"
-fi

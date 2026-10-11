@@ -13,22 +13,11 @@ set -eu
 
 LABEL=com.omabubble.timesync
 PLIST=/Library/LaunchDaemons/$LABEL.plist
-# Its name before the rename to omabubble (0.2.0).
-OLD_LABEL=com.imsg.timesync
-
-remove_old() {
-    if [ -f "/Library/LaunchDaemons/$OLD_LABEL.plist" ]; then
-        sudo launchctl bootout "system/$OLD_LABEL" 2>/dev/null || true
-        sudo rm -f "/Library/LaunchDaemons/$OLD_LABEL.plist"
-        echo "removed $OLD_LABEL"
-    fi
-}
 
 if [ "${1:-}" = --uninstall ]; then
     sudo launchctl bootout "system/$LABEL" 2>/dev/null || true
     sudo rm -f "$PLIST"
     echo "removed $LABEL"
-    remove_old
     exit 0
 fi
 
@@ -62,5 +51,4 @@ EOF
 sudo launchctl bootout "system/$LABEL" 2>/dev/null || true
 sudo install -o root -g wheel -m 0644 "$TMP" "$PLIST"
 sudo launchctl bootstrap system "$PLIST"
-remove_old
 echo "installed $LABEL: sets the clock from time.apple.com every 2 minutes"
