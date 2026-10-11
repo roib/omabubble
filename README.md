@@ -41,8 +41,9 @@ alone, not to sshd.
 
 ## Requirements
 
-- **A Mac** signed in to Messages that stays logged in and awake. Developed
-  on macOS 15 (Intel). It needs the Xcode Command Line Tools
+- **A Mac** signed in to Messages that stays logged in and awake. So far
+  this has only been tested on macOS 15 Sequoia (Intel); other versions may
+  store Messages data differently. It needs the Xcode Command Line Tools
   (`xcode-select --install`) and [mise](https://mise.jdx.dev) to build the
   bridge.
 - **A Linux machine** with a terminal; on Omarchy (or any Hyprland setup)
