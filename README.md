@@ -1,22 +1,33 @@
 # omabubble
 
 iMessage in a terminal on [Omarchy](https://omarchy.org), or any other Linux
-machine. A Mac that stays signed in to Messages runs **`omabubble-bridge`**.
-The TUI **`omabubble`** talks to it over SSH. Chats show Contacts names when
-the Mac has them, otherwise bare phone numbers and emails; `names = false` in
-the config shows handles only.
+machine. A Mac that stays signed in to Messages runs **`omabubble-bridge`**;
+the TUI **`omabubble`** talks to it over SSH. You get your chats with Contacts
+names, live updates, delivery and read status, pictures, and sending, without
+the Mac's screen.
 
 omabubble is an independent project, not affiliated with or endorsed by Apple,
 and not an official Omarchy project. iMessage and Messages are trademarks of
 Apple Inc.
 
-![A conversation: chat list on the left, messages with a reaction and read receipts on the right](docs/screenshots/chat.webp)
+<table>
+  <tr>
+    <td><img src="docs/screenshots/chat.webp" alt="A conversation: chat list on the left, messages with a reaction and read receipts on the right"></td>
+    <td><img src="docs/screenshots/group.webp" alt="A group chat with senders named from Contacts"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/picture.webp" alt="A photo shown as a thumbnail in the conversation"></td>
+    <td><img src="docs/screenshots/viewer.webp" alt="The same photo in the full-pane viewer"></td>
+  </tr>
+</table>
 
-![A group chat with senders named from Contacts](docs/screenshots/group.webp)
-
-The screenshots use made-up demo data. `scripts/demo/run.sh` runs omabubble against
-that data with a local bridge, so no Mac is needed (sends are dry runs);
+The screenshots use made-up demo data, and show pictures as half-blocks;
+terminals with a graphics protocol (foot, kitty, Ghostty) show them at full
+resolution. `scripts/demo/run.sh` runs omabubble against the demo data with a
+local bridge, so no Mac is needed (sends are dry runs), and
 `scripts/demo/screenshots.sh` regenerates the images.
+
+## How it works
 
 ```
 omabubble (Linux) ──ssh, restricted key──> omabubble-bridge connect ──unix socket──> omabubble-bridge serve (LaunchAgent)
@@ -28,37 +39,93 @@ omabubble (Linux) ──ssh, restricted key──> omabubble-bridge connect ─�
 The only network port is SSH. Full Disk Access is granted to `omabubble-bridge`
 alone, not to sshd.
 
-## Build
+## Requirements
 
-The Rust version is pinned in `mise.toml`, and both machines use it via mise.
+- **A Mac** signed in to Messages that stays logged in and awake. Developed
+  on macOS 15 (Intel). It needs the Xcode Command Line Tools
+  (`xcode-select --install`) and [mise](https://mise.jdx.dev) to build the
+  bridge.
+- **A Linux machine** with a terminal; on Omarchy (or any Hyprland setup)
+  clicking a notification jumps to the chat.
+- **SSH** from the Linux machine to the Mac.
 
-```sh
-# Linux: the TUI
-mise exec -- cargo build --release -p tui          # → target/release/omabubble
+The Rust version is pinned in `mise.toml`; mise installs it on first build.
 
-# Mac, in a clone of this repo. Once: a self-signed code-signing identity
-# (its own keychain, no prompts)
-scripts/mac/make-signing-cert.sh
+## Setup
 
-# Mac, every update, in a terminal (asks for your password):
-# build, sign, install root-owned to /usr/local/bin, (re)load the service
-scripts/mac/install-bridge.sh
-```
+### 1. The Mac
 
-Signing every build with the same identity makes macOS treat rebuilds as the
-same app, so Full Disk Access and Automation survive updates. Unsigned builds
-lose both permissions every time the binary changes. The binary and the
-LaunchAgent plist are root-owned on purpose; see Security below.
+1. **Turn on SSH:** System Settings → General → Sharing → Remote Login.
+2. **Get the code:** clone this repository anywhere, e.g.
+   `git clone https://github.com/roib/omabubble.git`, and `cd` into it.
+3. **Create a signing identity,** once:
+   `scripts/mac/make-signing-cert.sh`. It's a self-signed code-signing
+   certificate in its own keychain (no prompts). Signing every build with it
+   makes macOS treat new versions as the same app, so Full Disk Access and
+   Automation survive updates; unsigned builds lose both every time the
+   binary changes.
+4. **Install the bridge:** run `scripts/mac/install-bridge.sh` in a terminal
+   on the Mac; it asks for your password. It builds and signs the bridge,
+   puts it at `/usr/local/bin/omabubble-bridge` and the agent at
+   `/Library/LaunchAgents/com.omabubble.bridge.plist`, both root-owned (see
+   Security), and loads the agent into your login session. Logs go to
+   `~/Library/Logs/omabubble-bridge.log`. Run it again to update.
+5. **Full Disk Access:** go to System Settings → Privacy & Security → Full
+   Disk Access, click **+**, and add `/usr/local/bin/omabubble-bridge`
+   (⌘⇧G in the file picker to type the path). The agent retries every 10s
+   and starts once this is granted.
+6. **Automation permission:** the first real send makes macOS ask whether
+   `omabubble-bridge` may control Messages. Click Allow. If you miss the
+   prompt, sends fail with `-1743`; turn it on under Privacy & Security →
+   Automation.
+7. **Stay reachable:**
+   - Keep the Mac logged in. Messages.app itself can stay closed: incoming
+     messages are written to chat.db by a background daemon, and a send
+     launches Messages through AppleScript when needed.
+   - Turn on "Prevent automatic sleeping" (Energy settings) or run `caffeinate`.
+   - For SMS (green bubble) contacts, turn on Text Message Forwarding to this
+     Mac on the iPhone.
+   - **If macOS runs in a virtual machine** (for example Parallels or UTM on
+     a Mac): its clock stops while the host Mac sleeps and macOS doesn't
+     catch up, which delays messages. `scripts/mac/install-timesync.sh`
+     installs a root job that sets the clock from time.apple.com every 2
+     minutes. omabubble shows `⚠ Mac clock … behind` in the status bar when
+     the Mac's clock is more than 2 minutes off.
 
-`omabubble --version` and `omabubble-bridge --version` show the release and
-the commit they were built from, e.g. `0.2.0 (1b4e711)`; `-dirty` marks a
-build with uncommitted changes.
+To remove the service, run `sudo omabubble-bridge uninstall`.
 
-## Releases
+**Re-granting permissions** is only needed if the binary's identity changes,
+for example after switching from unsigned to signed or recreating the
+certificate. Remove `omabubble-bridge` from the Full Disk Access list and add
+it again, then allow the Automation prompt on the next send. On the Mac, this
+opens both windows for you:
+`open -R /usr/local/bin/omabubble-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
 
-omabubble and omabubble-bridge are released together under one version; see
-`CHANGELOG.md`. Each [GitHub release](https://github.com/roib/omabubble/releases)
-has a Linux build of the TUI (x86_64) and its checksum:
+### 2. A restricted SSH key
+
+This key can only reach the bridge.
+
+- On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/omabubble -N ''`
+- On the Mac, add one line to `~/.ssh/authorized_keys`:
+  ```
+  restrict,command="/usr/local/bin/omabubble-bridge connect" ssh-ed25519 AAAA…(contents of ~/.ssh/omabubble.pub)
+  ```
+  `restrict` turns off pty, port/agent/X11 forwarding and `~/.ssh/rc`.
+- On Linux, add to `~/.ssh/config`:
+  ```
+  Host mac-omabubble
+      HostName your-mac.local
+      User your-mac-username
+      IdentityFile ~/.ssh/omabubble
+      IdentitiesOnly yes
+  ```
+
+For use away from home, use Tailscale and the Mac's Tailscale name rather
+than forwarding port 22 on your router.
+
+### 3. Linux
+
+Install the TUI from the latest release (x86_64):
 
 ```sh
 cd ~/.local/bin
@@ -67,86 +134,11 @@ curl -fsSLO https://github.com/roib/omabubble/releases/latest/download/omabubble
 sha256sum -c omabubble-linux-amd64.sha256 && mv omabubble-linux-amd64 omabubble && chmod +x omabubble
 ```
 
-The bridge isn't published: it has to be signed with your own Mac's identity
-(see Build) to keep Full Disk Access across updates, so build it on the Mac
-with `install-bridge.sh`.
+or build it: `mise exec -- cargo build --release -p tui` (→
+`target/release/omabubble`).
 
-### Making a release
-
-1. Copy `local.env.example` to `local.env` (not committed) and set the Mac
-   that builds the bridge.
-2. Add notes under `## Unreleased` in `CHANGELOG.md`.
-3. On a clean `main`, run `scripts/release.sh 0.2.0`. It tests, commits and
-   tags `v0.2.0`, and builds the TUI here. It builds and signs the bridge on
-   the Mac, in `~/Library/Caches/omabubble/release`, a copy of the source it
-   overwrites each time. Then it pushes and creates the GitHub release.
-4. On the Mac, run `~/Library/Caches/omabubble/release/scripts/mac/install-bridge.sh --release`
-   to install that signed bridge. It's installed only if it's intact and was
-   signed with that Mac's identity.
-
-Released tags aren't reused: a broken release is fixed with a new patch
-version. An executable `./local-release.sh` (not committed) runs after
-publishing, with the tag and the build folder, for anything specific to your
-setup.
-
-## Mac setup (once)
-
-1. **Install the service:** run `scripts/mac/install-bridge.sh` in a
-   terminal on the Mac. It puts the binary at `/usr/local/bin/omabubble-bridge`
-   and the agent at `/Library/LaunchAgents/com.omabubble.bridge.plist`, both
-   root-owned, and loads the agent into your login session. Logs go to
-   `~/Library/Logs/omabubble-bridge.log`.
-2. **Full Disk Access:** go to System Settings → Privacy & Security → Full
-   Disk Access, click **+**, and add `/usr/local/bin/omabubble-bridge`
-   (⌘⇧G in the file picker to type the path). The agent retries every 10s
-   and starts once this is granted.
-3. **Automation permission:** the first real send makes macOS ask whether
-   `omabubble-bridge` may control Messages. Click Allow. If you miss the prompt,
-   sends fail with `-1743`; turn it on under Privacy & Security → Automation.
-4. **Stay reachable:**
-   - Keep the Mac logged in. Messages.app itself can stay closed: incoming
-     messages are written to chat.db by a background daemon, and a send
-     launches Messages through AppleScript when needed.
-   - Turn on "Prevent automatic sleeping" (Energy settings) or run `caffeinate`.
-   - For SMS (green bubble) contacts, turn on Text Message Forwarding to this Mac on the iPhone.
-   - **If macOS runs in a virtual machine** (for example Parallels or UTM on
-     a Mac): its clock stops while the host Mac sleeps and macOS doesn't
-     catch up, which delays messages. `scripts/mac/install-timesync.sh`
-     installs a root job that sets the clock from time.apple.com every 2
-     minutes. omabubble shows `⚠ Mac clock … behind` in the status bar when the
-     Mac's clock is more than 2 minutes off.
-5. **Restricted SSH key:** this key can only reach the bridge.
-   - On Linux: `ssh-keygen -t ed25519 -f ~/.ssh/omabubble -N ''`
-   - On the Mac, add one line to `~/.ssh/authorized_keys`:
-     ```
-     restrict,command="/usr/local/bin/omabubble-bridge connect" ssh-ed25519 AAAA…(contents of ~/.ssh/omabubble.pub)
-     ```
-     `restrict` turns off pty, port/agent/X11 forwarding and `~/.ssh/rc`.
-   - On Linux, add to `~/.ssh/config`:
-     ```
-     Host mac-omabubble
-         HostName 127.0.0.1
-         Port 2233
-         User b
-         IdentityFile ~/.ssh/omabubble
-         IdentitiesOnly yes
-     ```
-
-   For use away from home, use Tailscale and the Mac's Tailscale name rather
-   than forwarding port 22 on your router.
-
-To remove the service, run `sudo omabubble-bridge uninstall`.
-
-**Re-granting permissions:** this is only needed if the binary's identity
-changes, for example after switching from unsigned to signed or recreating the
-certificate. Remove `omabubble-bridge` from the Full Disk Access list and add it
-again, then allow the Automation prompt on the next send. Over VNC, this opens
-both windows for you:
-`open -R /usr/local/bin/omabubble-bridge; open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`
-
-## Linux setup
-
-`~/.config/omabubble/config.toml` (running `omabubble` without one prints this sample):
+Then create `~/.config/omabubble/config.toml`; running `omabubble` without
+one prints a sample with every option. The main ones:
 
 ```toml
 host = "mac-omabubble"
@@ -155,13 +147,13 @@ notifications = true    # notify-send for messages in chats you aren't looking a
 notification_detail = true  # false: notifications say only "New message" (see Security)
 notification_seconds = 20   # how long banners stay up; 0 = until dismissed (Omarchy allows 8–30)
 bell = false
-# ssh_args = ["-p", "2233"]                                   # if the host alias doesn't cover it
+# ssh_args = ["-p", "2222"]                                        # if the host alias doesn't cover it
 # remote_command = "/usr/local/bin/omabubble-bridge connect"       # only for keys without a forced command
 ```
 
 Then run `omabubble`, or `omabubble <host>` to override the configured host.
 
-### One person, several handles
+## One person, several handles
 
 `chat.db` keeps a separate chat row per handle, so a contact you message by
 both phone number and email has two rows, and Messages may file your sent copy
@@ -259,8 +251,8 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
 - Edits and unsends from other people (or your phone) show up, but you can't
   edit or unsend from the TUI: AppleScript has no command for either.
 - Reading a chat here doesn't mark it read on the Mac or phone.
-- Delivered/read receipts, typing indicators, sending attachments and tapbacks
-  aren't supported.
+- Sending your own read receipts, typing indicators, attachments and
+  tapbacks isn't supported.
 - New messages only arrive while the Mac is awake and online. After a
   reconnect, the TUI catches up on everything it missed.
 
@@ -306,7 +298,7 @@ What the design protects against, and what it doesn't.
 - **Input handling:** recipients and message text reach `osascript` as
   argv, never spliced into the script; all SQL is parameterised except
   integer chat ids; request lines over 1 MiB are rejected.
-- Dependencies are checked with `cargo audit`.
+- Check dependencies for known vulnerabilities with `cargo audit`.
 
 ## Development
 
@@ -334,6 +326,35 @@ every push and pull request.
 Protocol: newline-delimited JSON, defined in `proto/src/lib.rs`. The bridge
 sends `hello` with a protocol version first. On a mismatch, the TUI refuses to
 continue and asks you to rebuild.
+
+### Versions and releases
+
+`omabubble --version` and `omabubble-bridge --version` show the release and
+the commit they were built from, e.g. `0.2.0 (1b4e711)`; `-dirty` marks a
+build with uncommitted changes. omabubble and omabubble-bridge are released
+together under one version; see `CHANGELOG.md`. Each
+[GitHub release](https://github.com/roib/omabubble/releases) has a Linux build
+of the TUI and its checksum. The bridge isn't published: it has to be signed
+with your own Mac's identity to keep Full Disk Access across updates.
+
+To make a release:
+
+1. Copy `local.env.example` to `local.env` (not committed) and set the Mac
+   that builds the bridge.
+2. Add notes under `## Unreleased` in `CHANGELOG.md`.
+3. On a clean `main`, run `scripts/release.sh 0.2.0`. It tests, commits and
+   tags `v0.2.0`, and builds the TUI here. It builds and signs the bridge on
+   the Mac, in `~/Library/Caches/omabubble/release`, a copy of the source it
+   overwrites each time. Then it pushes and creates the GitHub release.
+4. On the Mac, run
+   `~/Library/Caches/omabubble/release/scripts/mac/install-bridge.sh --release`
+   to install that signed bridge. It's installed only if it's intact and was
+   signed with that Mac's identity.
+
+Released tags aren't reused: a broken release is fixed with a new patch
+version. An executable `./local-release.sh` (not committed) runs after
+publishing, with the tag and the build folder, for anything specific to your
+setup.
 
 ## Security issues
 

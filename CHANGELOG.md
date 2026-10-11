@@ -8,6 +8,12 @@ same one.
 
 ## Unreleased
 
+- The sample config's `remote_command` example points at
+  `/usr/local/bin/omabubble-bridge`, where the bridge is installed.
+- README: setup in order (Mac, SSH key, Linux) with the steps that were
+  missing (Remote Login, the Command Line Tools, the signing identity), and
+  screenshots of pictures in a conversation and in the viewer; the demo's
+  photos are redrawn by `scripts/demo/pictures.py`.
 - Releases go to GitHub Releases, with a Linux build of the TUI and its
   checksum. The bridge isn't published, since it must be signed on your own
   Mac; `install-bridge.sh --release` installs the one `release.sh` built and

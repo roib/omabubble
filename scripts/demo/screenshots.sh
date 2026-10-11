@@ -42,12 +42,34 @@ shot() {
 mkdir -p "$OUT"
 sleep 1.5
 
+# Keep drafts out of the shots: a draft adds a ✏ to the chat list, which tmux
+# and the TUI measure at different widths, so the borders would shift.
+
+# A picture in a conversation, shown as a thumbnail (half-blocks here; real
+# terminals with a graphics protocol show it at full resolution).
+keys j j j j
+keys Enter
+shot picture
+
+# The same picture in the full-pane viewer.
+keys Escape
+keys Tab
+keys k
+keys k
+keys Enter
+shot viewer
+
 # A conversation: Maya's chat open, a reply being typed.
+keys Escape
+keys Escape
+keys k k k k
 keys Enter
 type_text "leaving in 10"
 shot chat
 
-# A group chat: senders named from Contacts.
+# A group chat: senders named from Contacts. Clear the reply first so it
+# doesn't stay behind as a draft.
+keys C-u
 keys Escape
 keys j
 keys Enter

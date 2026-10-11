@@ -9,7 +9,7 @@ pub struct Config {
     pub host: String,
     /// Extra ssh arguments, e.g. ["-p", "2233"].
     pub ssh_args: Vec<String>,
-    /// Remote command, for keys without a forced command, e.g. "/Users/you/.local/bin/omabubble-bridge connect".
+    /// Remote command, for keys without a forced command, e.g. "/usr/local/bin/omabubble-bridge connect".
     pub remote_command: Option<String>,
     /// Run this instead of ssh (local testing).
     pub command: Option<Vec<String>>,
@@ -71,7 +71,7 @@ host = "mac-omabubble"
 # ssh_args = ["-p", "2233"]
 
 # Only needed when the SSH key has no forced command:
-# remote_command = "/Users/you/.local/bin/omabubble-bridge connect"
+# remote_command = "/usr/local/bin/omabubble-bridge connect"
 
 # Prepended to 10-digit numbers typed in the new-conversation popup.
 country_code = "1"
