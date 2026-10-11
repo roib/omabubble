@@ -96,8 +96,9 @@ can't be replaced, so a broken release is fixed with a new patch version.
      launches Messages through AppleScript when needed.
    - Turn on "Prevent automatic sleeping" (Energy settings) or run `caffeinate`.
    - For SMS (green bubble) contacts, turn on Text Message Forwarding to this Mac on the iPhone.
-   - **If the Mac is a VM:** its clock stops while the host sleeps and macOS
-     doesn't catch up, which delays messages. `scripts/mac/install-timesync.sh`
+   - **If macOS runs in a virtual machine** (for example Parallels or UTM on
+     a Mac): its clock stops while the host Mac sleeps and macOS doesn't
+     catch up, which delays messages. `scripts/mac/install-timesync.sh`
      installs a root job that sets the clock from time.apple.com every 2
      minutes. imsg shows `⚠ Mac clock … behind` in the status bar when the
      Mac's clock is more than 2 minutes off.

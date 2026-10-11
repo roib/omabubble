@@ -1,5 +1,6 @@
 #!/bin/sh
-# Keep the Mac's clock right when it runs as a VM.
+# Keep macOS's clock right when it runs in a virtual machine (for example
+# Parallels or UTM on a Mac).
 #
 # A VM's clock stops while its host sleeps, and macOS doesn't catch up on its
 # own afterwards (seen here: 15 hours behind after a night's suspend). Apple's
