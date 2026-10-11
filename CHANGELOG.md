@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.3.2 (2026-10-10)
+
 - Over SSH, `o` opens the link again, and also copies it. 0.3.1 only copied
   it, but on a machine with a desktop (Omarchy, for one) links open fine
   even from an SSH session; the copy covers machines without one.
