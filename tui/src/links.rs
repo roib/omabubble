@@ -105,6 +105,14 @@ mod tests {
     }
 
     #[test]
+    fn apple_maps_links() {
+        assert_eq!(
+            find("https://maps.apple/p/EhdEY15yD7tH~J"),
+            ["https://maps.apple/p/EhdEY15yD7tH~J"]
+        );
+    }
+
+    #[test]
     fn repeats_are_listed_once() {
         assert_eq!(find("https://x.org https://x.org."), ["https://x.org"]);
     }

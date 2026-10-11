@@ -190,6 +190,7 @@ prints only counts.
 | | `Enter` | Open chat |
 | | `n` | New conversation (number or email) |
 | | `d` / `Delete` | Hide the chat on this machine until a new message arrives (the Mac and phone keep it); `u` undoes the last hide |
+| | `o` | Open the newest link in the open conversation (and select its message) |
 | Anywhere | `Tab` / `Shift-Tab` | Cycle focus: list → messages → input |
 | | `PgUp` / `PgDn` | Scroll; at the top, older history loads |
 | | `q` (outside the input), `Ctrl-C` | Quit |

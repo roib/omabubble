@@ -9,8 +9,9 @@ same one.
 ## Unreleased
 
 - `o` on a selected message opens its link in your browser, through
-  `xdg-open`; with several links, a picker lets you choose. Only `http`,
-  `https` and `www.` links open, never `file:` or app links.
+  `xdg-open`; with several links, a picker lets you choose. In the chat
+  list, `o` opens the open conversation's newest link. Only `http`, `https`
+  and `www.` links open, never `file:` or app links.
 
 ## 0.2.1 (2026-10-10)
 

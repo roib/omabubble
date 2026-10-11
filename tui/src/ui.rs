@@ -926,6 +926,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         _ if viewer_hint.is_some() => viewer_hint.unwrap(),
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
+        (_, Focus::List) if app.conversation_has_links() => {
+            "j/k move  Enter open  o open link  n new  d hide  q quit"
+        }
         (_, Focus::List) => "j/k move  Enter open  n new  d hide  Tab focus  q quit",
         (_, Focus::Messages) => {
             if app.selected_pending_visible() {

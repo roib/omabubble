@@ -1170,6 +1170,36 @@ impl App {
         !self.selected_links().is_empty()
     }
 
+    /// The open conversation's newest message with a web link.
+    fn newest_link(&self) -> Option<usize> {
+        self.items().iter().rposition(|it| {
+            let text = match it {
+                Item::Msg(m) => &m.text,
+                Item::Pending(p) => &p.text,
+            };
+            !links::find(text).is_empty()
+        })
+    }
+
+    /// Whether `o` in the chat list would open a link.
+    pub fn conversation_has_links(&self) -> bool {
+        self.newest_link().is_some()
+    }
+
+    /// `o` in the chat list: select the open conversation's newest message
+    /// with a link, so it's clear which one, and open it.
+    fn open_newest_link(&mut self, now: Instant) {
+        let newest = self.newest_link();
+        let (Some(i), Some(v)) = (newest, &mut self.view) else {
+            self.flash_msg("no links in this conversation", now);
+            return;
+        };
+        v.sel = Some(i);
+        v.follow_sel = true;
+        self.focus = Focus::Messages;
+        self.open_link(now);
+    }
+
     /// `o` on a message: open its link, or let the user pick one of several.
     fn open_link(&mut self, now: Instant) {
         let mut links = self.selected_links();
@@ -1779,6 +1809,7 @@ impl App {
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_selected(now),
             KeyCode::Char('d') | KeyCode::Delete => self.hide_selected(now),
             KeyCode::Char('u') => self.unhide_last(now),
+            KeyCode::Char('o') => self.open_newest_link(now),
             _ => {
                 self.global_key(key, now);
             }
@@ -2747,6 +2778,21 @@ mod tests {
         app.on_key(key(KeyCode::Enter), now);
         assert_eq!(opened(&app).as_deref(), Some("https://www.b.example"));
         assert!(app.link_picker.is_none());
+
+        // From the chat list, o opens the conversation's newest link.
+        app.effects.clear();
+        app.focus = Focus::List;
+        assert!(app.conversation_has_links());
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert_eq!(opened(&app).as_deref(), Some("https://c.example/page"));
+        assert_eq!(app.focus, Focus::Messages);
+        assert_eq!(
+            app.view.as_ref().unwrap().sel,
+            Some(2),
+            "that message is selected"
+        );
+        app.on_key(key(KeyCode::Char('k')), now);
+        app.on_key(key(KeyCode::Char('k')), now);
 
         // Esc closes the picker without opening anything.
         app.effects.clear();
