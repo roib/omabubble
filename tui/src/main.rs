@@ -113,6 +113,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
 
     let mut app = App::new(cfg);
     app.pics.picker = picker;
+    app.can_open_links = has_display();
     app.recents = load_recents();
     app.hidden = load_hidden();
     app.drafts = load_drafts();
@@ -393,6 +394,12 @@ fn picture_stem(name: &str) -> String {
     } else {
         clean
     }
+}
+
+/// Whether there's a graphical session to open things in; over SSH there
+/// usually isn't, and xdg-open would fail without saying so.
+fn has_display() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
 }
 
 /// Opens a file or web link with the desktop's default app; false if

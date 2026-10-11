@@ -8,6 +8,10 @@ same one.
 
 ## Unreleased
 
+- `o` copies the link instead when omabubble has no display to open it on,
+  as over SSH, and says so. Before, it reported "Opened" while `xdg-open`
+  failed silently.
+
 ## 0.3.0 (2026-10-10)
 
 - `o` on a selected message opens its link in your browser, through
