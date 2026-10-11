@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.3.1 (2026-10-10)
+
 - `o` copies the link instead when omabubble has no display to open it on,
   as over SSH, and says so. Before, it reported "Opened" while `xdg-open`
   failed silently.
