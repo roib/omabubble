@@ -3,6 +3,7 @@ mod clipboard;
 mod config;
 mod conn;
 mod emoji;
+mod links;
 mod notify;
 mod phone;
 mod pics;
@@ -204,7 +205,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 Effect::SavePicture { name, jpeg } => {
                     let msg = match save_picture(&name, &jpeg) {
                         Ok(path) => {
-                            open_file(&path);
+                            open(path.as_os_str());
                             format!("saved {}", path.display())
                         }
                         Err(e) => format!("couldn't save: {e}"),
@@ -212,6 +213,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                     app.notice(msg, Instant::now());
                 }
                 Effect::SaveHidden(hidden) => save_hidden(&hidden),
+                Effect::OpenUrl(url) => {
+                    if !open(url.as_ref()) {
+                        app.notice(
+                            "couldn't open the link: is xdg-open installed?",
+                            Instant::now(),
+                        );
+                    }
+                }
             }
         }
         if app.quit {
@@ -386,15 +395,21 @@ fn picture_stem(name: &str) -> String {
     }
 }
 
-fn open_file(path: &std::path::Path) {
-    if let Ok(mut child) = std::process::Command::new("xdg-open")
-        .arg(path)
+/// Opens a file or web link with the desktop's default app; false if
+/// xdg-open couldn't be started.
+fn open(target: &std::ffi::OsStr) -> bool {
+    match std::process::Command::new("xdg-open")
+        .arg(target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        std::thread::spawn(move || child.wait());
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
     }
 }
 

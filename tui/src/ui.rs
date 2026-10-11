@@ -44,6 +44,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.popup.is_some() {
         draw_popup(f, app);
     }
+    if app.link_picker.is_some() {
+        draw_link_picker(f, app);
+    }
     match app.emoji.as_ref().map(|p| p.inline.is_some()) {
         Some(true) => draw_emoji_inline(f, app, input_area),
         Some(false) => draw_emoji_picker(f, app),
@@ -919,6 +922,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         }
     });
     let hints = match (app.popup.is_some(), app.focus) {
+        _ if app.link_picker.is_some() => "j/k choose  Enter open  Esc cancel",
         _ if viewer_hint.is_some() => viewer_hint.unwrap(),
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
@@ -928,6 +932,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 "Enter resend  x discard  j/k select  y copy  Esc back"
             } else if app.selected_has_pictures() {
                 "Enter view picture  j/k select  y copy  Esc back"
+            } else if app.selected_has_links() {
+                "o open link  j/k select  y copy  Esc back"
             } else {
                 "j/k select  y copy  Y +meta  v range  PgUp older  Esc back"
             }
@@ -941,6 +947,54 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(hints, Style::new().dark_gray()));
     }
     f.render_widget(Paragraph::new(Line::from(left)), area);
+}
+
+/// Which of a message's links to open: one per row, the chosen one marked.
+fn draw_link_picker(f: &mut Frame, app: &App) {
+    let Some(p) = &app.link_picker else { return };
+    let area = f.area();
+    let longest = p.links.iter().map(|l| l.width()).max().unwrap_or(0);
+    let w = (longest as u16 + 6).clamp(36, 90).min(area.width);
+    let h = (p.links.len() as u16 + 4).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(" Open link ")
+        .border_style(Style::new().fg(Color::LightBlue));
+    let room = (block.inner(rect).width as usize).saturating_sub(2);
+    let mut lines: Vec<Line> = p
+        .links
+        .iter()
+        .enumerate()
+        .map(|(i, link)| {
+            let text = if link.width() > room {
+                let mut cut: String = link
+                    .chars()
+                    .scan(0, |acc, c| {
+                        *acc += c.width().unwrap_or(0);
+                        (*acc < room).then_some(c)
+                    })
+                    .collect();
+                cut.push('…');
+                cut
+            } else {
+                link.clone()
+            };
+            if i == p.index {
+                Line::from(vec!["▸ ".light_blue(), text.light_blue().bold()])
+            } else {
+                Line::from(format!("  {text}"))
+            }
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from("j/k choose  Enter open  Esc cancel".dark_gray()));
+    f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 fn draw_popup(f: &mut Frame, app: &App) {

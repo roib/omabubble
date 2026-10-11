@@ -3,6 +3,7 @@
 
 use crate::config::{Config, Person};
 use crate::emoji;
+use crate::links;
 use crate::phone;
 use crate::pics::{self, Pics};
 use chrono::{Local, TimeZone};
@@ -59,6 +60,8 @@ pub enum Effect {
         jpeg: Vec<u8>,
     },
     SaveHidden(HashMap<i64, i64>),
+    /// Open a web link (only ever http or https; see `links`).
+    OpenUrl(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +215,13 @@ impl Viewer {
     }
 }
 
+/// Choosing which link to open, for a message with several.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkPicker {
+    pub links: Vec<String>,
+    pub index: usize,
+}
+
 pub struct App {
     pub host_label: String,
     country_code: String,
@@ -280,6 +290,7 @@ pub struct App {
     pub rects: Rects,
     pub pics: Pics,
     pub viewer: Option<Viewer>,
+    pub link_picker: Option<LinkPicker>,
     /// Owned here so the list's scroll offset is known for clicks.
     pub list_state: ListState,
 }
@@ -338,6 +349,7 @@ impl App {
             rects: Rects::default(),
             pics: Pics::default(),
             viewer: None,
+            link_picker: None,
             list_state: ListState::default(),
         }
     }
@@ -1141,6 +1153,56 @@ impl App {
         }
     }
 
+    /// The web links in the messages pane's selection.
+    fn selected_links(&self) -> Vec<String> {
+        let Some(sel) = self.view.as_ref().and_then(|v| v.sel) else {
+            return Vec::new();
+        };
+        match self.items().get(sel) {
+            Some(Item::Msg(m)) => links::find(&m.text),
+            Some(Item::Pending(p)) => links::find(&p.text),
+            None => Vec::new(),
+        }
+    }
+
+    /// Whether `o` would open a link from the selection.
+    pub fn selected_has_links(&self) -> bool {
+        !self.selected_links().is_empty()
+    }
+
+    /// `o` on a message: open its link, or let the user pick one of several.
+    fn open_link(&mut self, now: Instant) {
+        let mut links = self.selected_links();
+        match links.len() {
+            0 => self.flash_msg("no link in this message", now),
+            1 => self.open_url(links.remove(0), now),
+            _ => self.link_picker = Some(LinkPicker { links, index: 0 }),
+        }
+    }
+
+    fn open_url(&mut self, url: String, now: Instant) {
+        self.flash_msg(format!("Opened {}", links::host(&url)), now);
+        self.effects.push(Effect::OpenUrl(url));
+    }
+
+    fn link_picker_key(&mut self, key: KeyEvent, now: Instant) {
+        let Some(p) = &mut self.link_picker else {
+            return;
+        };
+        let n = p.links.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.link_picker = None,
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => p.index = (p.index + 1) % n,
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => p.index = (p.index + n - 1) % n,
+            KeyCode::Enter | KeyCode::Char('o') => {
+                let url = p.links[p.index].clone();
+                self.link_picker = None;
+                self.open_url(url, now);
+            }
+            _ => {}
+        }
+    }
+
     fn selected_pending(&self) -> Option<u64> {
         let sel = self.view.as_ref()?.sel?;
         match self.items().get(sel)? {
@@ -1395,7 +1457,7 @@ impl App {
     // ---------------------------------------------------------------- input
 
     pub fn on_mouse(&mut self, ev: MouseEvent, now: Instant) {
-        if self.popup.is_some() {
+        if self.popup.is_some() || self.link_picker.is_some() {
             return;
         }
         let at = Position::new(ev.column, ev.row);
@@ -1532,6 +1594,9 @@ impl App {
         }
         if self.viewer.is_some() {
             return self.viewer_key(key, now);
+        }
+        if self.link_picker.is_some() {
+            return self.link_picker_key(key, now);
         }
         if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
             self.focus = Focus::Input;
@@ -1791,6 +1856,7 @@ impl App {
             }
             KeyCode::Char('y') => self.copy_selection(false, now),
             KeyCode::Char('Y') => self.copy_selection(true, now),
+            KeyCode::Char('o') => self.open_link(now),
             KeyCode::Esc => {
                 if let Some(v) = &mut self.view
                     && v.anchor.is_some()
@@ -2628,6 +2694,67 @@ mod tests {
         app.on_key(key(KeyCode::Char('y')), now);
         assert!(matches!(app.effects.last(), Some(Effect::Copy(t)) if t == "a\nb"));
         assert_eq!(app.flash.as_ref().unwrap().0, "Copied 2 messages");
+    }
+
+    #[test]
+    fn o_opens_links() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now);
+        let id = requests(&mut app)[0].0;
+        let history = vec![
+            msg(10, 1, false, "two: https://a.example/x and www.b.example."),
+            msg(11, 1, false, "only file:///etc/passwd here"),
+            msg(12, 1, false, "see https://c.example/page."),
+        ];
+        app.on_line(
+            &line(&Response {
+                id,
+                messages: Some(history),
+                ..Default::default()
+            }),
+            now,
+        );
+        let opened = |app: &App| match app.effects.last() {
+            Some(Effect::OpenUrl(u)) => Some(u.clone()),
+            _ => None,
+        };
+
+        app.on_key(key(KeyCode::Tab), now); // Input -> List
+        app.on_key(key(KeyCode::Tab), now); // List -> Messages, selects last
+        assert!(app.selected_has_links());
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert_eq!(opened(&app).as_deref(), Some("https://c.example/page"));
+        assert_eq!(app.flash.as_ref().unwrap().0, "Opened c.example");
+
+        // A file: link is never opened.
+        app.effects.clear();
+        app.on_key(key(KeyCode::Char('k')), now);
+        assert!(!app.selected_has_links());
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert_eq!(opened(&app), None);
+        assert_eq!(app.flash.as_ref().unwrap().0, "no link in this message");
+
+        // Several links: pick one.
+        app.on_key(key(KeyCode::Char('k')), now);
+        app.on_key(key(KeyCode::Char('o')), now);
+        assert_eq!(opened(&app), None, "waits for a choice");
+        let picker = app.link_picker.as_ref().unwrap();
+        assert_eq!(
+            picker.links,
+            ["https://a.example/x", "https://www.b.example"]
+        );
+        app.on_key(key(KeyCode::Char('j')), now);
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(opened(&app).as_deref(), Some("https://www.b.example"));
+        assert!(app.link_picker.is_none());
+
+        // Esc closes the picker without opening anything.
+        app.effects.clear();
+        app.on_key(key(KeyCode::Char('o')), now);
+        app.on_key(key(KeyCode::Esc), now);
+        assert!(app.link_picker.is_none());
+        assert_eq!(opened(&app), None);
+        assert_eq!(app.focus, Focus::Messages, "Esc only closed the picker");
     }
 
     fn two_handle_person() -> Config {
