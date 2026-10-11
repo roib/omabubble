@@ -36,12 +36,13 @@ The Rust version is pinned in `mise.toml`, and both machines use it via mise.
 # Linux: the TUI
 mise exec -- cargo build --release -p tui          # → target/release/omabubble
 
-# Mac, once: a self-signed code-signing identity (its own keychain, no prompts)
-~/src/appl-tui/scripts/mac/make-signing-cert.sh
+# Mac, in a clone of this repo. Once: a self-signed code-signing identity
+# (its own keychain, no prompts)
+scripts/mac/make-signing-cert.sh
 
 # Mac, every update, in a terminal (asks for your password):
 # build, sign, install root-owned to /usr/local/bin, (re)load the service
-~/src/appl-tui/scripts/mac/install-bridge.sh
+scripts/mac/install-bridge.sh
 ```
 
 Signing every build with the same identity makes macOS treat rebuilds as the
@@ -64,12 +65,16 @@ with the layout `artifact-push` and `install.sh` use):
 curl -fsSL https://artifacts.example.com/install.sh | sh -s -- omabubble
 
 # Mac, in a terminal (asks for your password): install the latest bridge,
-# or name a version, e.g. --release v0.1.0
-~/src/appl-tui/scripts/mac/install-bridge.sh --release
+# or name a version, e.g. --release v0.2.0
+~/Library/Caches/omabubble/release/scripts/mac/install-bridge.sh --release
 ```
 
 A published bridge is installed only if its checksum matches and it was
-signed with this Mac's identity, so Full Disk Access carries over.
+signed with this Mac's identity, so Full Disk Access carries over. That makes
+published bridges specific to the Mac that built them: `release.sh` builds
+and signs on that Mac, in `~/Library/Caches/omabubble/release`, a copy of the
+source it overwrites on every release. On any other Mac, build from a clone
+with `install-bridge.sh` instead.
 
 Copy `local.env.example` to `local.env` (not committed) and set your Mac and
 artifacts site there. To make a release, add notes under `## Unreleased` in

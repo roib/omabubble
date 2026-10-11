@@ -8,6 +8,9 @@ same one.
 
 ## Unreleased
 
+- `release.sh` keeps its build copy on the Mac in
+  `~/Library/Caches/omabubble/release` (was `~/src/appl-tui`); set
+  `OMABUBBLE_MAC_DIR` in `local.env` to change it.
 ## 0.2.0 (2026-10-10)
 
 - **imsg is now omabubble.** The commands are `omabubble` and

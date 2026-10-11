@@ -25,7 +25,9 @@ cd "$(dirname "$0")/.."
 
 MAC=${OMABUBBLE_MAC:-you@your-mac}
 MAC_PORT=${OMABUBBLE_MAC_PORT:-2233}
-MAC_DIR=src/appl-tui
+# The Mac's copy of the source, relative to its home: a build mirror that each
+# release overwrites (rsync --delete), so it lives with other caches.
+MAC_DIR=${OMABUBBLE_MAC_DIR:-Library/Caches/omabubble/release}
 MAC_MISE=/opt/local/bin/mise
 SITE=${ARTIFACTS_URL:-https://artifacts.example.com}
 
@@ -87,6 +89,7 @@ got=$("$dist/omabubble-linux-amd64" --version)
 [ "$got" = "$want" ] || die "omabubble says \"$got\", expected \"$want\""
 
 echo "== building and signing omabubble-bridge on the Mac"
+mac "mkdir -p $MAC_DIR"
 rsync -a --delete --exclude target --exclude .git -e "ssh -p $MAC_PORT" ./ "$MAC:$MAC_DIR/"
 out=target/release/omabubble-bridge-darwin-amd64
 mac "set -e
