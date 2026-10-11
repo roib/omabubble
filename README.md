@@ -5,6 +5,9 @@ Messages runs **`imsg-bridge`**. The Linux TUI **`imsg`** talks to it over SSH.
 Chats show Contacts names when the Mac has them, otherwise bare phone numbers
 and emails; `names = false` in the config shows handles only.
 
+imsg is an independent project, not affiliated with or endorsed by Apple.
+iMessage and Messages are trademarks of Apple Inc.
+
 ![A conversation: chat list on the left, messages with a reaction and read receipts on the right](docs/screenshots/chat.webp)
 
 ![A group chat with senders named from Contacts](docs/screenshots/group.webp)
@@ -314,3 +317,7 @@ cargo run -p tui -- --config /tmp/imsg-dev.toml
 Protocol: newline-delimited JSON, defined in `proto/src/lib.rs`. The bridge
 sends `hello` with a protocol version first. On a mismatch, the TUI refuses to
 continue and asks you to rebuild.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
