@@ -8,6 +8,10 @@ same one.
 
 ## Unreleased
 
+- Over SSH, `o` opens the link again, and also copies it. 0.3.1 only copied
+  it, but on a machine with a desktop (Omarchy, for one) links open fine
+  even from an SSH session; the copy covers machines without one.
+
 ## 0.3.1 (2026-10-10)
 
 - `o` copies the link instead when omabubble has no display to open it on,

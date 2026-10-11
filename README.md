@@ -207,7 +207,7 @@ prints only counts.
 | | `v` | Start or cancel a range; `y`/`Y` then copy the range |
 | | `Enter` on a failed message | Put its text back in the input to resend |
 | | `Enter` on a message with pictures | View them full-pane: `←/→` between pictures, `o` save to `~/Downloads` and open, `Esc` back |
-| | `o` on a message with a link | Open it in your browser; with several links, choose one first. Only `http`/`https` and `www.` links open. Without a display (over SSH), the link is copied instead |
+| | `o` on a message with a link | Open it in your browser; with several links, choose one first. Only `http`/`https` and `www.` links open. Without a display (over SSH), it's also copied, in case it can't open there |
 | | `x` on a failed message | Discard it |
 | | `Esc` | Cancel range / back |
 

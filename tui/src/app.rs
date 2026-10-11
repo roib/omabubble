@@ -291,9 +291,10 @@ pub struct App {
     pub pics: Pics,
     pub viewer: Option<Viewer>,
     pub link_picker: Option<LinkPicker>,
-    /// Whether this machine has a display to open links on. Over SSH it
-    /// usually doesn't, so `o` copies the link instead.
-    pub can_open_links: bool,
+    /// No display in this session, as over SSH. `o` still tries to open the
+    /// link (Omarchy's launcher reaches the desktop even from SSH on the same
+    /// machine), and also copies it, for when there's no desktop at all.
+    pub copy_links_too: bool,
     /// Owned here so the list's scroll offset is known for clicks.
     pub list_state: ListState,
 }
@@ -353,7 +354,7 @@ impl App {
             pics: Pics::default(),
             viewer: None,
             link_picker: None,
-            can_open_links: true,
+            copy_links_too: false,
             list_state: ListState::default(),
         }
     }
@@ -1215,16 +1216,17 @@ impl App {
     }
 
     fn open_url(&mut self, url: String, now: Instant) {
-        if self.can_open_links {
-            self.flash_msg(format!("Opened {}", links::host(&url)), now);
-            self.effects.push(Effect::OpenUrl(url));
-        } else {
+        let host = links::host(&url).to_string();
+        if self.copy_links_too {
             self.flash_msg(
-                "No display here (over SSH?): link copied, paste it in your browser",
+                format!("Opened {host} (also copied: this is an SSH session)"),
                 now,
             );
-            self.effects.push(Effect::Copy(url));
+            self.effects.push(Effect::Copy(url.clone()));
+        } else {
+            self.flash_msg(format!("Opened {host}"), now);
         }
+        self.effects.push(Effect::OpenUrl(url));
     }
 
     fn link_picker_key(&mut self, key: KeyEvent, now: Instant) {
@@ -2806,17 +2808,19 @@ mod tests {
         app.on_key(key(KeyCode::Char('k')), now);
         app.on_key(key(KeyCode::Char('k')), now);
 
-        // Without a display (over SSH), the link is copied instead.
+        // Without a display (over SSH), the link is opened and also copied.
         app.effects.clear();
-        app.can_open_links = false;
+        app.copy_links_too = true;
         app.focus = Focus::List;
         app.on_key(key(KeyCode::Char('o')), now);
-        assert_eq!(opened(&app), None);
+        assert_eq!(opened(&app).as_deref(), Some("https://c.example/page"));
         assert!(
-            matches!(app.effects.last(), Some(Effect::Copy(u)) if u == "https://c.example/page")
+            app.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Copy(u) if u == "https://c.example/page"))
         );
-        assert!(app.flash.as_ref().unwrap().0.contains("link copied"));
-        app.can_open_links = true;
+        assert!(app.flash.as_ref().unwrap().0.contains("also copied"));
+        app.copy_links_too = false;
         app.on_key(key(KeyCode::Char('k')), now);
         app.on_key(key(KeyCode::Char('k')), now);
 
