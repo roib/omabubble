@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.2.1 (2026-10-10)
+
 - The sample config's `remote_command` example points at
   `/usr/local/bin/omabubble-bridge`, where the bridge is installed.
 - README: setup in order (Mac, SSH key, Linux) with the steps that were
