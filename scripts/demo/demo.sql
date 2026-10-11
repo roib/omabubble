@@ -42,8 +42,8 @@ INSERT INTO m VALUES
     (23, 2, 1, 0, 0, 20,   'forecast looks clear all weekend'),
     (24, 2, 4, 0, 0, 5,    'meet at the trailhead at 8?'),
     -- Jordan, by email (older) then by phone
-    (30, 4, 3, 0, 1, 2900, 'sent you the photos from the trip'),
-    (31, 3, 0, 1, 1, 1500, 'thanks for the photos! the lake one is great'),
+    (30, 4, 3, 0, 1, 2900, 'sent you the photos from the dive'),
+    (31, 3, 0, 1, 1, 1500, 'thanks for the photos! the reef one is amazing'),
     (32, 3, 2, 0, 1, 1490, 'anytime 🙌'),
     -- Dad
     (40, 5, 5, 0, 1, 1380, 'look how the tomatoes are doing'),

@@ -1,9 +1,9 @@
-"""Draw the demo's two made-up photos with ImageMagick.
+"""Draw Dad's made-up tomatoes photo for the demo with ImageMagick.
 
-    python3 scripts/demo/pictures.py <tomatoes.jpg> <lake.jpg>
+    python3 scripts/demo/pictures.py <tomatoes.jpg>
 
-Simple shapes and gradients, so they read well even as the TUI's half-block
-thumbnails.
+Simple shapes and gradients, so it reads well even as the TUI's half-block
+thumbnail.
 """
 
 import subprocess
@@ -53,33 +53,6 @@ def tomatoes(out, work):
     magick(bg, "-quality", "88", out)
 
 
-def lake(out):
-    """Jordan's lake: mountains at sunset over still water."""
-    magick(
-        "-size", "1200x800", "gradient:#6aa9e0-#fbd6a0",
-        "(", "-size", "760x760", "radial-gradient:#fff6d0-#fff6d000", ")",
-        "-geometry", "+360+0", "-composite",
-        "-fill", "#fff8de", "-draw", "circle 740,330 740,288",
-        "-fill", "#7d8fae",
-        "-draw", "polygon 0,500 180,330 320,420 520,240 700,400 880,280 1050,380 1200,320 1200,560 0,560",
-        "-fill", "#eef3fa",
-        "-draw", "polygon 520,240 470,300 505,292 540,312 575,290",
-        "-draw", "polygon 880,280 845,322 880,315 910,330",
-        "-fill", "#4d6a55",
-        "-draw", "polygon 0,560 0,470 140,430 300,480 470,440 650,500 820,450 1000,490 1200,450 1200,560",
-        "(", "-size", "1200x260", "gradient:#4f86b3-#1f4766", ")",
-        "-geometry", "+0+540", "-composite",
-        "-fill", "#2e4a39",
-        "-draw", "polygon 60,545 80,470 100,545", "-draw", "polygon 110,545 135,450 160,545",
-        "-draw", "polygon 1040,545 1065,460 1090,545", "-draw", "polygon 1095,545 1115,480 1135,545",
-        "-fill", "#fff8de66",
-        "-draw", "rectangle 690,580 790,585", "-draw", "rectangle 705,620 775,624",
-        "-draw", "rectangle 720,660 760,663",
-        "-blur", "0x1.2", "-quality", "88", out,
-    )
-
-
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as work:
         tomatoes(sys.argv[1], Path(work))
-    lake(sys.argv[2])

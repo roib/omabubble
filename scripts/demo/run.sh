@@ -11,14 +11,15 @@ cd "$(dirname "$0")/../.."
 ROOT=$PWD
 FIX=bridge/tests/fixtures
 
-# Two made-up photos (needs ImageMagick; without it they show as labels).
+# Two photos (needs ImageMagick; without it they show as labels): Dad's
+# tomatoes, drawn by pictures.py, and Jordan's reef, scripts/demo/reef.jpg.
 # The bridge serves pictures only from beside chat.db, so they go there.
 pictures() {
     command -v magick >/dev/null || return 0
     a="$1/Attachments/00"
     mkdir -p "$a/A1" "$a/A2"
-    # Dad's tomatoes and Jordan's lake.
-    python3 -I scripts/demo/pictures.py "$a/A1/IMG_2041.jpg" "$a/A2/IMG_3310.jpg"
+    python3 -I scripts/demo/pictures.py "$a/A1/IMG_2041.jpg"
+    cp scripts/demo/reef.jpg "$a/A2/IMG_3310.jpg"
     sqlite3 "$1/chat.db" "
         UPDATE attachment SET filename = '$a/A1/IMG_2041.jpg', mime_type = 'image/jpeg',
             transfer_name = 'IMG_2041.jpg' WHERE ROWID = 1;
