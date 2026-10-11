@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.3.0 (2026-10-10)
+
 - `o` on a selected message opens its link in your browser, through
   `xdg-open`; with several links, a picker lets you choose. In the chat
   list, `o` opens the open conversation's newest link. Only `http`, `https`
