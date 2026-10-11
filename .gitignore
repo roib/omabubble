@@ -4,3 +4,4 @@
 *.db-shm
 __pycache__/
 local.env
+local-release.sh

@@ -3,6 +3,9 @@ name = "bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Mac side of omabubble: serves Messages to the TUI over SSH"
 
 [[bin]]
 name = "omabubble-bridge"

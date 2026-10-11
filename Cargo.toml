@@ -6,6 +6,9 @@ members = ["proto", "bridge", "tui"]
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/roib/omabubble"
+# The crate names are generic; nothing here is meant for crates.io.
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

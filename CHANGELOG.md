@@ -8,6 +8,14 @@ same one.
 
 ## Unreleased
 
+- Releases go to GitHub Releases, with a Linux build of the TUI and its
+  checksum. The bridge isn't published, since it must be signed on your own
+  Mac; `install-bridge.sh --release` installs the one `release.sh` built and
+  signed there. An optional, uncommitted `./local-release.sh` runs after
+  publishing.
+- `scripts/mac/build-bridge.sh` builds and signs the bridge, finding `mise`
+  on the PATH or in the usual Homebrew, MacPorts and installer locations.
+- Added `SECURITY.md` and a CI workflow (fmt, clippy, tests).
 - The one-time moves from imsg are gone, so omabubble never touches files of
   other programs named imsg. Coming from 0.1.0, install 0.2.0 first, or move
   the folders by hand: `~/.config/imsg` and `~/.local/state/imsg` to
@@ -19,6 +27,7 @@ same one.
 - `release.sh` keeps its build copy on the Mac in
   `~/Library/Caches/omabubble/release` (was `~/src/appl-tui`); set
   `OMABUBBLE_MAC_DIR` in `local.env` to change it.
+
 ## 0.2.0 (2026-10-10)
 
 - **imsg is now omabubble.** The commands are `omabubble` and

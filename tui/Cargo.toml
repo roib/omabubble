@@ -3,6 +3,9 @@ name = "tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "iMessage in a terminal on Omarchy or any Linux machine, through omabubble-bridge on a Mac"
 
 [[bin]]
 name = "omabubble"

@@ -50,38 +50,44 @@ same app, so Full Disk Access and Automation survive updates. Unsigned builds
 lose both permissions every time the binary changes. The binary and the
 LaunchAgent plist are root-owned on purpose; see Security below.
 
-`omabubble --version` and `omabubble-bridge --version` show the release and the commit
-they were built from, e.g. `0.1.0 (455dfb1)`; `-dirty` marks a build with
-uncommitted changes.
+`omabubble --version` and `omabubble-bridge --version` show the release and
+the commit they were built from, e.g. `0.2.0 (1b4e711)`; `-dirty` marks a
+build with uncommitted changes.
 
 ## Releases
 
-omabubble and omabubble-bridge are released together under one version (see
-`CHANGELOG.md`) and published to an artifacts site (`ARTIFACTS_URL`, served
-with the layout `artifact-push` and `install.sh` use):
+omabubble and omabubble-bridge are released together under one version; see
+`CHANGELOG.md`. Each [GitHub release](https://github.com/roib/omabubble/releases)
+has a Linux build of the TUI (x86_64) and its checksum:
 
 ```sh
-# Linux: install or update the TUI (to ~/.local/bin/omabubble)
-curl -fsSL https://artifacts.example.com/install.sh | sh -s -- omabubble
-
-# Mac, in a terminal (asks for your password): install the latest bridge,
-# or name a version, e.g. --release v0.2.0
-~/Library/Caches/omabubble/release/scripts/mac/install-bridge.sh --release
+cd ~/.local/bin
+curl -fsSLO https://github.com/roib/omabubble/releases/latest/download/omabubble-linux-amd64
+curl -fsSLO https://github.com/roib/omabubble/releases/latest/download/omabubble-linux-amd64.sha256
+sha256sum -c omabubble-linux-amd64.sha256 && mv omabubble-linux-amd64 omabubble && chmod +x omabubble
 ```
 
-A published bridge is installed only if its checksum matches and it was
-signed with this Mac's identity, so Full Disk Access carries over. That makes
-published bridges specific to the Mac that built them: `release.sh` builds
-and signs on that Mac, in `~/Library/Caches/omabubble/release`, a copy of the
-source it overwrites on every release. On any other Mac, build from a clone
-with `install-bridge.sh` instead.
+The bridge isn't published: it has to be signed with your own Mac's identity
+(see Build) to keep Full Disk Access across updates, so build it on the Mac
+with `install-bridge.sh`.
 
-Copy `local.env.example` to `local.env` (not committed) and set your Mac and
-artifacts site there. To make a release, add notes under `## Unreleased` in
-`CHANGELOG.md`, then run `scripts/release.sh 0.2.0` on a clean `main`. It tests, commits and tags
-`v0.2.0`, builds the TUI here and the bridge on the Mac (signed there),
-publishes both with `artifact-push`, and pushes to GitHub. Published versions
-can't be replaced, so a broken release is fixed with a new patch version.
+### Making a release
+
+1. Copy `local.env.example` to `local.env` (not committed) and set the Mac
+   that builds the bridge.
+2. Add notes under `## Unreleased` in `CHANGELOG.md`.
+3. On a clean `main`, run `scripts/release.sh 0.2.0`. It tests, commits and
+   tags `v0.2.0`, and builds the TUI here. It builds and signs the bridge on
+   the Mac, in `~/Library/Caches/omabubble/release`, a copy of the source it
+   overwrites each time. Then it pushes and creates the GitHub release.
+4. On the Mac, run `~/Library/Caches/omabubble/release/scripts/mac/install-bridge.sh --release`
+   to install that signed bridge. It's installed only if it's intact and was
+   signed with that Mac's identity.
+
+Released tags aren't reused: a broken release is fixed with a new patch
+version. An executable `./local-release.sh` (not committed) runs after
+publishing, with the tag and the build folder, for anything specific to your
+setup.
 
 ## Mac setup (once)
 
@@ -322,9 +328,16 @@ cargo run -p tui -- --config /tmp/omabubble-dev.toml
   - send/echo matching, reconnect catch-up and copy ranges
   - phone normalization and emoji-safe wrapping
 
+CI runs `cargo fmt --check`, clippy (warnings are errors) and the tests on
+every push and pull request.
+
 Protocol: newline-delimited JSON, defined in `proto/src/lib.rs`. The bridge
 sends `hello` with a protocol version first. On a mismatch, the TUI refuses to
 continue and asks you to rebuild.
+
+## Security issues
+
+Please report them privately; see [SECURITY.md](SECURITY.md).
 
 ## License
 

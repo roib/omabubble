@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Rust version from mise.toml
+        run: |
+          rust=$(sed -n 's/^rust = "\(.*\)"/\1/p' mise.toml)
+          rustup toolchain install "$rust" --profile minimal --component clippy,rustfmt
+          rustup override set "$rust"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
