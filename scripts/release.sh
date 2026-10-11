@@ -15,10 +15,13 @@
 #
 # Published versions are immutable: fix a bad release with a new patch version.
 #
-# The Mac is reached as $IMSG_MAC on port $IMSG_MAC_PORT (default you@your-mac,
-# 2233) with your normal SSH key, not the bridge-only one.
+# Settings come from the environment or from local.env in the repo root (not
+# committed; see local.env.example): IMSG_MAC and IMSG_MAC_PORT, the Mac to
+# build the bridge on, reached with your normal SSH key, not the bridge-only
+# one; ARTIFACTS_URL, the artifacts site.
 set -eu
 cd "$(dirname "$0")/.."
+[ ! -f local.env ] || . ./local.env
 
 MAC=${IMSG_MAC:-you@your-mac}
 MAC_PORT=${IMSG_MAC_PORT:-2233}

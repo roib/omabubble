@@ -51,7 +51,8 @@ uncommitted changes.
 ## Releases
 
 imsg and imsg-bridge are released together under one version (see
-`CHANGELOG.md`) and published to artifacts.example.com:
+`CHANGELOG.md`) and published to an artifacts site (`ARTIFACTS_URL`, served
+with the layout `artifact-push` and `install.sh` use):
 
 ```sh
 # Linux: install or update the TUI (to ~/.local/bin/imsg)
@@ -65,8 +66,9 @@ curl -fsSL https://artifacts.example.com/install.sh | sh -s -- imsg
 A published bridge is installed only if its checksum matches and it was
 signed with this Mac's identity, so Full Disk Access carries over.
 
-To make a release, add notes under `## Unreleased` in `CHANGELOG.md`, then
-run `scripts/release.sh 0.2.0` on a clean `main`. It tests, commits and tags
+Copy `local.env.example` to `local.env` (not committed) and set your Mac and
+artifacts site there. To make a release, add notes under `## Unreleased` in
+`CHANGELOG.md`, then run `scripts/release.sh 0.2.0` on a clean `main`. It tests, commits and tags
 `v0.2.0`, builds the TUI here and the bridge on the Mac (signed there),
 publishes both with `artifact-push`, and pushes to GitHub. Published versions
 can't be replaced, so a broken release is fixed with a new patch version.

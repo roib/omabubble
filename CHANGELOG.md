@@ -7,6 +7,9 @@ when it changes: a TUI and a bridge must speak the same one.
 
 ## Unreleased
 
+- `release.sh` and `install-bridge.sh` read the Mac and the artifacts site
+  from `local.env` (see `local.env.example`) instead of built-in defaults.
+
 ## 0.1.0 (2026-10-10)
 
 First release. Protocol version 4.

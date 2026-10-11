@@ -8,11 +8,12 @@
 #   scripts/mac/install-bridge.sh --release [VER]    install a published release
 #                                                    (default: the latest), e.g. v0.1.0
 #
-# Releases come from https://artifacts.example.com/imsg-bridge/ and are
+# Releases come from $ARTIFACTS_URL/imsg-bridge/ (set in local.env) and are
 # installed only if their checksum matches and they were signed with this
 # Mac's signing identity (scripts/release.sh builds and signs them here).
 set -eu
 cd "$(dirname "$0")/../.."
+[ ! -f local.env ] || . ./local.env
 
 MISE=${MISE:-/opt/local/bin/mise}
 BASE=${ARTIFACTS_URL:-https://artifacts.example.com}
