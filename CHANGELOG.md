@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.4.1 (2026-10-14)
+
 - The `Ctrl-A` attach prompt lists the files and folders matching what you
   type, newest first, with size and age, so a screenshot you just took is at
   the top. Tab completes as far as the matches agree, then moves down the
