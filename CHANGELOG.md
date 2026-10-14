@@ -8,6 +8,12 @@ same one.
 
 ## Unreleased
 
+- The `Ctrl-A` attach prompt previews the chosen file (or the top match)
+  beside the list, with its size in pixels and its format. JPEG, PNG, GIF,
+  WebP and BMP pictures are decoded in the background, the right way up;
+  other files, HEIC included, show their type and size. The preview needs
+  a terminal at least 90 columns wide and 18 rows tall.
+
 ## 0.4.1 (2026-10-14)
 
 - The `Ctrl-A` attach prompt lists the files and folders matching what you

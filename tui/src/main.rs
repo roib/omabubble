@@ -43,6 +43,8 @@ enum AppEvent {
     Conn(conn::Tagged),
     /// A desktop notification for this chat was clicked.
     NotifyClicked(i64),
+    /// A file for the attach prompt's preview, decoded.
+    Preview(PathBuf, pics::Decoded),
 }
 
 fn main() -> Result<()> {
@@ -172,6 +174,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                 AppEvent::Conn((generation, _)) if generation != conn.generation => {}
                 AppEvent::Conn((_, ConnEvent::Line(line))) => app.on_line(&line, now),
                 AppEvent::Conn((_, ConnEvent::Closed(reason))) => app.on_closed(reason, now),
+                AppEvent::Preview(path, decoded) => app.pics.local_decoded(path, decoded),
                 AppEvent::NotifyClicked(chat_id) => {
                     if let Some(w) = &window {
                         notify::focus_window(w);
@@ -215,6 +218,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, cfg: &config::Config) -> Result<
                     app.notice(msg, Instant::now());
                 }
                 Effect::SaveHidden(hidden) => save_hidden(&hidden),
+                Effect::LoadPreview(path) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let decoded = pics::decode_local(&path);
+                        let _ = tx.send(AppEvent::Preview(path, decoded));
+                    });
+                }
                 Effect::OpenUrl(url) => {
                     if !open(url.as_ref()) {
                         app.notice(

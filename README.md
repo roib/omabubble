@@ -200,7 +200,7 @@ prints only counts.
 | | `Ctrl-W` / `Ctrl-U` | Delete word / clear |
 | | `:` + two letters | Emoji completion (`:thu` → 👍); Tab/↑↓ choose, Enter insert, Esc close. A full `:fire:` converts when you type a space |
 | | `Ctrl-E` | Emoji picker: recently used first, type to search by shortcode or name |
-| | `Ctrl-A` | Attach a file: type a path and pick from the matches below it, newest first. `Tab` completes, then moves down the list; `↑`/`↓` choose; `Enter` attaches a file or opens a folder |
+| | `Ctrl-A` | Attach a file: type a path and pick from the matches below it, newest first. `Tab` completes, then moves down the list; `↑`/`↓` choose; `Enter` attaches a file or opens a folder. On a wide enough terminal, the file shown is previewed beside the list |
 | | `Backspace` in an empty input | Take off the last attached file |
 | | `Esc` | Back to the list (what you typed stays as that chat's draft) |
 | Messages pane | `j`/`k` | Select a message |

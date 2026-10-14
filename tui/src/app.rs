@@ -64,6 +64,8 @@ pub enum Effect {
     SaveHidden(HashMap<i64, i64>),
     /// Open a web link (only ever http or https; see `links`).
     OpenUrl(String),
+    /// Decode a local picture for the attach prompt's preview, off the UI thread.
+    LoadPreview(std::path::PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +281,17 @@ impl AttachPrompt {
             (Some(i), true) => (i + 1) % n,
             (Some(i), false) => (i + n - 1) % n,
         });
+    }
+
+    /// The file to preview: the chosen match, else the top one; not a folder.
+    pub fn preview_path(&self) -> Option<std::path::PathBuf> {
+        let c = self.matches.get(self.sel.unwrap_or(0))?;
+        (!c.is_dir).then(|| {
+            attach::expand_home(std::path::Path::new(&attach::with_name(
+                &self.typed,
+                &c.name,
+            )))
+        })
     }
 
     /// The path Enter acts on: the chosen match, or what's typed.
@@ -1867,6 +1880,7 @@ impl App {
         if let Some(p) = &mut self.attach_prompt {
             p.typed.push_str(text.trim().lines().next().unwrap_or(""));
             p.refresh();
+            self.update_preview();
             return;
         }
         if let Some(p) = &mut self.popup {
@@ -1915,6 +1929,26 @@ impl App {
     /// Ctrl+A: type a path. Tab completes as far as the matches agree, then
     /// moves down them; ↑/↓ choose; Enter attaches a file or opens a folder.
     fn attach_prompt_key(&mut self, key: KeyEvent, now: Instant) {
+        self.attach_prompt_key_inner(key, now);
+        self.update_preview();
+    }
+
+    /// Asks for the preview of what the prompt shows now; drops previews
+    /// once it's closed.
+    fn update_preview(&mut self) {
+        match &self.attach_prompt {
+            Some(p) => {
+                if let Some(path) = p.preview_path()
+                    && self.pics.want_local(&path)
+                {
+                    self.effects.push(Effect::LoadPreview(path));
+                }
+            }
+            None => self.pics.forget_local(),
+        }
+    }
+
+    fn attach_prompt_key_inner(&mut self, key: KeyEvent, now: Instant) {
         let Some(p) = &mut self.attach_prompt else {
             return;
         };
@@ -1999,6 +2033,7 @@ impl App {
         }
         if ctrl && key.code == KeyCode::Char('a') && self.view.is_some() {
             self.attach_prompt = Some(AttachPrompt::new("~/"));
+            self.update_preview();
             return;
         }
         if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
@@ -2833,6 +2868,7 @@ mod tests {
     #[test]
     fn attach_prompt_lists_and_chooses_matches() {
         let (mut app, now) = connected();
+        app.pics.picker = Some(ratatui_image::picker::Picker::halfblocks());
         app.on_key(key(KeyCode::Enter), now); // chat 1
         let d = std::env::temp_dir().join(format!("omabubble-prompt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -2867,6 +2903,17 @@ mod tests {
         let p = app.attach_prompt.as_ref().unwrap();
         let names: Vec<&str> = p.matches.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["shot-b.png", "shot-a.png", "shots"], "newest first");
+
+        // The top match is previewed; pictures are decoded off the UI thread.
+        let wants: Vec<_> = app
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::LoadPreview(p) if p.starts_with(&d) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wants, [d.join("shot-b.png")]);
 
         // Tab extends to what they share, then moves down the list.
         app.on_key(key(KeyCode::Tab), now);

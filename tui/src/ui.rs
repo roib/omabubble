@@ -52,6 +52,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.attach_prompt.is_some() {
         draw_attach_prompt(f, app);
     }
+    app.pics.end_frame();
     match app.emoji.as_ref().map(|p| p.inline.is_some()) {
         Some(true) => draw_emoji_inline(f, app, input_area),
         Some(false) => draw_emoji_picker(f, app),
@@ -231,7 +232,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             ),
         ];
         f.render_widget(Paragraph::new(hint).centered(), inner);
-        app.pics.finish_frame(Vec::new());
+        app.pics.add_drawn(Vec::new());
         return;
     }
 
@@ -335,7 +336,7 @@ fn draw_viewer(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Image::new(proto), rect);
         drawn.push((rect, id));
     }
-    app.pics.finish_frame(drawn);
+    app.pics.add_drawn(drawn);
 }
 
 /// Draws thumbnails over their reserved rows. A picture is drawn only when
@@ -350,6 +351,11 @@ fn draw_pictures(
     end: usize,
     pad: usize,
 ) {
+    // The attach prompt covers the conversation: keep its pictures (terminal
+    // graphics, drawn over everything) out of the way of the prompt's preview.
+    if app.attach_prompt.is_some() {
+        return app.pics.add_drawn(Vec::new());
+    }
     let rows = THUMB_ROWS as usize;
     let height = inner.height as usize;
     let mut drawn = Vec::new();
@@ -381,7 +387,7 @@ fn draw_pictures(
         f.render_widget(Image::new(proto), rect);
         drawn.push((rect, p.id));
     }
-    app.pics.finish_frame(drawn);
+    app.pics.add_drawn(drawn);
 }
 
 fn follow(v: &mut View, s: usize, e: usize) {
@@ -998,15 +1004,26 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Ctrl+A: the path being typed, and below it the matching names, newest
-/// first, with the chosen one marked.
-fn draw_attach_prompt(f: &mut Frame, app: &App) {
+/// first, with the chosen one marked. On a wide enough screen, the file
+/// shown (chosen, or the top match) is previewed beside the list.
+fn draw_attach_prompt(f: &mut Frame, app: &mut App) {
     const ROWS: usize = 8;
-    let Some(p) = &app.attach_prompt else { return };
+    let Some(p) = app.attach_prompt.as_ref() else {
+        return;
+    };
     let area = f.area();
+    let with_preview = app.pics.enabled() && area.width >= 90 && area.height >= 18;
     let shown_rows = p.matches.len().min(ROWS);
-    let w = 72.min(area.width);
-    // Border, path, list (or a "no matches" line), blank, hints.
-    let h = (shown_rows.max(1) as u16 + 5).min(area.height);
+    let w = if with_preview {
+        (area.width - 4).min(120)
+    } else {
+        72.min(area.width)
+    };
+    // Border, path, list (or a "no matches" line), blank, hints; taller
+    // with a preview, so the picture has room.
+    let h = (shown_rows.max(1) as u16 + 5)
+        .max(if with_preview { 18 } else { 0 })
+        .min(area.height);
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -1018,9 +1035,28 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
         .title(" Attach a file ")
         .border_style(Style::new().fg(Color::LightBlue));
     let inner = block.inner(rect);
-    let room = inner.width as usize;
+    f.render_widget(block, rect);
+    let [path_row, body, _, hint_row] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let (list_area, preview_area) = if with_preview {
+        let [l, _, r] = Layout::horizontal([
+            Constraint::Percentage(55),
+            Constraint::Length(2),
+            Constraint::Min(10),
+        ])
+        .areas(body);
+        (l, Some(r))
+    } else {
+        (body, None)
+    };
 
     // Keep the end of a long path in view.
+    let room = path_row.width as usize;
     let typed = &p.typed;
     let shown: String = if typed.width() >= room {
         let tail: Vec<char> = typed
@@ -1035,8 +1071,10 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
     } else {
         typed.clone()
     };
-    let mut lines = vec![Line::from(shown.clone())];
+    f.render_widget(Paragraph::new(shown.clone()), path_row);
 
+    let room = list_area.width as usize;
+    let mut lines = Vec::new();
     if p.matches.is_empty() {
         lines.push(Line::from("  no matches".dark_gray()));
     }
@@ -1055,8 +1093,7 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
             (true, None) => String::new(),
             (false, None) => attach::size_text(c.size),
         };
-        let name_room = room.saturating_sub(detail.width() + 4);
-        let name = truncate(&name, name_room);
+        let name = truncate(&name, room.saturating_sub(detail.width() + 4));
         let pad = room.saturating_sub(2 + name.width() + detail.width());
         let marker = if chosen { "▸ " } else { "  " };
         let style = if chosen {
@@ -1073,16 +1110,73 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
             Span::styled(detail, Style::new().dark_gray()),
         ]));
     }
-    lines.push(Line::from(""));
+    f.render_widget(Paragraph::new(lines), list_area);
+
     let more = p.matches.len().saturating_sub(first + ROWS);
     let hint = if more > 0 {
         format!("Tab complete  ↑↓ choose  Enter attach/open  Esc   +{more} more")
     } else {
         "Tab complete  ↑↓ choose  Enter attach/open  Esc".into()
     };
-    lines.push(Line::from(hint.dark_gray()));
-    f.render_widget(Paragraph::new(lines).block(block), rect);
-    f.set_cursor_position((inner.x + shown.width() as u16, inner.y));
+    f.render_widget(Paragraph::new(hint.dark_gray()), hint_row);
+    f.set_cursor_position((path_row.x + shown.width() as u16, path_row.y));
+
+    let preview = p.preview_path();
+    let size = p.matches.get(p.sel.unwrap_or(0)).map_or(0, |c| c.size);
+    if let (Some(pane), Some(path)) = (preview_area, preview) {
+        draw_preview(f, app, pane, &path, size);
+    }
+}
+
+/// The attach prompt's preview pane: the picture, fitted and centred, with
+/// its size and format under it; or a note for anything else.
+fn draw_preview(f: &mut Frame, app: &mut App, pane: Rect, path: &std::path::Path, bytes: u64) {
+    use crate::pics::Local;
+    let caption_row = Rect {
+        y: pane.y + pane.height.saturating_sub(1),
+        height: 1,
+        ..pane
+    };
+    let pic_area = Rect {
+        height: pane.height.saturating_sub(2),
+        ..pane
+    };
+    let note = |f: &mut Frame, text: String| {
+        let row = Rect {
+            y: pane.y + pane.height / 2,
+            height: 1,
+            ..pane
+        };
+        f.render_widget(Paragraph::new(Line::from(text.dark_gray()).centered()), row);
+    };
+    match app.pics.local(path) {
+        None | Some(Local::Loading) => note(f, "loading…".into()),
+        Some(Local::Note(text)) => note(f, format!("{text} · {}", attach::size_text(bytes))),
+        Some(Local::Ready {
+            width,
+            height,
+            format,
+            ..
+        }) => {
+            let caption = format!("{width}×{height} {format} · {}", attach::size_text(bytes));
+            f.render_widget(
+                Paragraph::new(Line::from(caption.dark_gray()).centered()),
+                caption_row,
+            );
+            if let Some(proto) = app.pics.local_protocol_fit(path, pic_area.as_size()) {
+                let size = proto.size();
+                let rect = Rect {
+                    x: pic_area.x + pic_area.width.saturating_sub(size.width) / 2,
+                    y: pic_area.y + pic_area.height.saturating_sub(size.height) / 2,
+                    width: size.width.min(pic_area.width),
+                    height: size.height.min(pic_area.height),
+                };
+                f.render_widget(Image::new(proto), rect);
+                // Not an attachment id: any value that tells it apart.
+                app.pics.add_drawn(vec![(rect, -2)]);
+            }
+        }
+    }
 }
 
 /// Which of a message's links to open: one per row, the chosen one marked.
