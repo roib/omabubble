@@ -962,7 +962,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     });
     let hints = match (app.popup.is_some(), app.focus) {
         _ if app.link_picker.is_some() => "j/k choose  Enter open  Esc cancel",
-        _ if app.attach_prompt.is_some() => "Tab complete  Enter attach  Esc cancel",
+        _ if app.attach_prompt.is_some() => {
+            "Tab complete  ↑↓ choose  Enter attach/open  Esc cancel"
+        }
         _ if viewer_hint.is_some() => viewer_hint.unwrap(),
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
@@ -995,14 +997,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(left)), area);
 }
 
-/// Ctrl+A: the path of a file to attach, with Tab completion.
+/// Ctrl+A: the path being typed, and below it the matching names, newest
+/// first, with the chosen one marked.
 fn draw_attach_prompt(f: &mut Frame, app: &App) {
-    let Some(typed) = &app.attach_prompt else {
-        return;
-    };
+    const ROWS: usize = 8;
+    let Some(p) = &app.attach_prompt else { return };
     let area = f.area();
-    let w = 70.min(area.width);
-    let h = 5.min(area.height);
+    let shown_rows = p.matches.len().min(ROWS);
+    let w = 72.min(area.width);
+    // Border, path, list (or a "no matches" line), blank, hints.
+    let h = (shown_rows.max(1) as u16 + 5).min(area.height);
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -1014,9 +1018,11 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
         .title(" Attach a file ")
         .border_style(Style::new().fg(Color::LightBlue));
     let inner = block.inner(rect);
+    let room = inner.width as usize;
+
     // Keep the end of a long path in view.
-    let room = (inner.width as usize).saturating_sub(1);
-    let shown: String = if typed.width() > room {
+    let typed = &p.typed;
+    let shown: String = if typed.width() >= room {
         let tail: Vec<char> = typed
             .chars()
             .rev()
@@ -1029,11 +1035,52 @@ fn draw_attach_prompt(f: &mut Frame, app: &App) {
     } else {
         typed.clone()
     };
-    let lines = vec![
-        Line::from(shown.clone()),
-        Line::from(""),
-        Line::from("Tab complete  Enter attach  Esc cancel".dark_gray()),
-    ];
+    let mut lines = vec![Line::from(shown.clone())];
+
+    if p.matches.is_empty() {
+        lines.push(Line::from("  no matches".dark_gray()));
+    }
+    // Scroll so the chosen match stays in the window.
+    let first = p.sel.map_or(0, |s| (s + 1).saturating_sub(ROWS));
+    for (i, c) in p.matches.iter().enumerate().skip(first).take(ROWS) {
+        let chosen = p.sel == Some(i);
+        let name = if c.is_dir {
+            format!("{}/", c.name)
+        } else {
+            c.name.clone()
+        };
+        let detail = match (c.is_dir, c.modified) {
+            (true, Some(t)) => attach::age_text(t),
+            (false, Some(t)) => format!("{}  {}", attach::size_text(c.size), attach::age_text(t)),
+            (true, None) => String::new(),
+            (false, None) => attach::size_text(c.size),
+        };
+        let name_room = room.saturating_sub(detail.width() + 4);
+        let name = truncate(&name, name_room);
+        let pad = room.saturating_sub(2 + name.width() + detail.width());
+        let marker = if chosen { "▸ " } else { "  " };
+        let style = if chosen {
+            Style::new().light_blue().bold()
+        } else if c.is_dir {
+            Style::new().light_blue()
+        } else {
+            Style::new()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::new().light_blue()),
+            Span::styled(name, style),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(detail, Style::new().dark_gray()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    let more = p.matches.len().saturating_sub(first + ROWS);
+    let hint = if more > 0 {
+        format!("Tab complete  ↑↓ choose  Enter attach/open  Esc   +{more} more")
+    } else {
+        "Tab complete  ↑↓ choose  Enter attach/open  Esc".into()
+    };
+    lines.push(Line::from(hint.dark_gray()));
     f.render_widget(Paragraph::new(lines).block(block), rect);
     f.set_cursor_position((inner.x + shown.width() as u16, inner.y));
 }

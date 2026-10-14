@@ -241,6 +241,55 @@ impl Viewer {
     }
 }
 
+/// Ctrl+A: a path being typed, and the names in its folder that match it.
+#[derive(Debug, Clone)]
+pub struct AttachPrompt {
+    pub typed: String,
+    /// Newest first.
+    pub matches: Vec<attach::Candidate>,
+    /// The match chosen with Tab or ↑/↓; Enter takes it over what's typed.
+    pub sel: Option<usize>,
+}
+
+impl AttachPrompt {
+    fn new(typed: &str) -> AttachPrompt {
+        let mut p = AttachPrompt {
+            typed: typed.to_string(),
+            matches: Vec::new(),
+            sel: None,
+        };
+        p.refresh();
+        p
+    }
+
+    /// What's typed changed: list its matches afresh.
+    fn refresh(&mut self) {
+        self.matches = attach::candidates(&self.typed);
+        self.sel = None;
+    }
+
+    fn step(&mut self, forward: bool) {
+        let n = self.matches.len();
+        if n == 0 {
+            return;
+        }
+        self.sel = Some(match (self.sel, forward) {
+            (None, true) => 0,
+            (None, false) => n - 1,
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+        });
+    }
+
+    /// The path Enter acts on: the chosen match, or what's typed.
+    fn chosen(&self) -> String {
+        match self.sel.and_then(|i| self.matches.get(i)) {
+            Some(c) => attach::with_name(&self.typed, &c.name),
+            None => self.typed.trim().to_string(),
+        }
+    }
+}
+
 /// Choosing which link to open, for a message with several.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkPicker {
@@ -321,8 +370,8 @@ pub struct App {
     pub attached: Vec<Attached>,
     /// Other chats' attachments, kept while you switch (not saved to disk).
     attached_by_chat: HashMap<String, Vec<Attached>>,
-    /// The Ctrl+A "attach a file" path being typed.
-    pub attach_prompt: Option<String>,
+    /// The Ctrl+A "attach a file" prompt.
+    pub attach_prompt: Option<AttachPrompt>,
     /// No display in this session, as over SSH. `o` still tries to open the
     /// link (Omarchy's launcher reaches the desktop even from SSH on the same
     /// machine), and also copies it, for when there's no desktop at all.
@@ -1815,6 +1864,11 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if let Some(p) = &mut self.attach_prompt {
+            p.typed.push_str(text.trim().lines().next().unwrap_or(""));
+            p.refresh();
+            return;
+        }
         if let Some(p) = &mut self.popup {
             if p.field == 0 {
                 p.to.push_str(&text.replace('\n', " "));
@@ -1858,22 +1912,48 @@ impl App {
         }
     }
 
-    /// Ctrl+A: type a path, Tab completes, Enter attaches.
+    /// Ctrl+A: type a path. Tab completes as far as the matches agree, then
+    /// moves down them; ↑/↓ choose; Enter attaches a file or opens a folder.
     fn attach_prompt_key(&mut self, key: KeyEvent, now: Instant) {
-        let Some(typed) = &mut self.attach_prompt else {
+        let Some(p) = &mut self.attach_prompt else {
             return;
         };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.attach_prompt = None,
-            KeyCode::Tab => *typed = attach::complete(typed),
-            KeyCode::Backspace => {
-                typed.pop();
+            KeyCode::Tab => {
+                let completed = attach::complete(&p.typed);
+                if completed != p.typed {
+                    p.typed = completed;
+                    p.refresh();
+                } else {
+                    p.step(true);
+                }
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => typed.clear(),
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => typed.push(c),
+            KeyCode::BackTab | KeyCode::Up => p.step(false),
+            KeyCode::Char('p') if ctrl => p.step(false),
+            KeyCode::Down => p.step(true),
+            KeyCode::Char('n') if ctrl => p.step(true),
+            KeyCode::Backspace => {
+                p.typed.pop();
+                p.refresh();
+            }
+            KeyCode::Char('u') if ctrl => {
+                p.typed.clear();
+                p.refresh();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                p.typed.push(c);
+                p.refresh();
+            }
             KeyCode::Enter => {
-                let path = std::path::PathBuf::from(typed.trim());
-                if self.attach(&path, now) {
+                let chosen = p.chosen();
+                let path = attach::expand_home(std::path::Path::new(&chosen));
+                if path.is_dir() {
+                    // Open the folder: list what's in it.
+                    p.typed = format!("{}/", chosen.trim_end_matches('/'));
+                    p.refresh();
+                } else if self.attach(&path, now) {
                     self.attach_prompt = None;
                     self.focus = Focus::Input;
                 }
@@ -1918,7 +1998,7 @@ impl App {
             return self.attach_prompt_key(key, now);
         }
         if ctrl && key.code == KeyCode::Char('a') && self.view.is_some() {
-            self.attach_prompt = Some("~/".into());
+            self.attach_prompt = Some(AttachPrompt::new("~/"));
             return;
         }
         if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
@@ -2748,6 +2828,72 @@ mod tests {
         let last = app.pending.last().unwrap();
         assert!(matches!(&last.state, PendState::Failed(e) if e.contains("connection lost")));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attach_prompt_lists_and_chooses_matches() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now); // chat 1
+        let d = std::env::temp_dir().join(format!("omabubble-prompt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("shots")).unwrap();
+        for (name, secs_ago) in [("shot-a.png", 300), ("shot-b.png", 60)] {
+            std::fs::write(d.join(name), b"png").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(d.join(name))
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago),
+                )
+                .unwrap();
+        }
+        std::fs::write(d.join("shots/inner.jpg"), b"jpg").unwrap();
+        // The folder is older than both files.
+        std::fs::File::open(d.join("shots"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            now,
+        );
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            now,
+        );
+        app.on_paste(&format!("{}/sh", d.display()));
+        let p = app.attach_prompt.as_ref().unwrap();
+        let names: Vec<&str> = p.matches.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["shot-b.png", "shot-a.png", "shots"], "newest first");
+
+        // Tab extends to what they share, then moves down the list.
+        app.on_key(key(KeyCode::Tab), now);
+        let p = app.attach_prompt.as_ref().unwrap();
+        assert!(p.typed.ends_with("/shot") && p.sel.is_none());
+        app.on_key(key(KeyCode::Tab), now);
+        app.on_key(key(KeyCode::Tab), now);
+        assert_eq!(app.attach_prompt.as_ref().unwrap().sel, Some(1));
+        app.on_key(key(KeyCode::Up), now);
+        assert_eq!(app.attach_prompt.as_ref().unwrap().sel, Some(0));
+
+        // Enter on a folder opens it; typing narrows; Enter attaches.
+        app.on_key(key(KeyCode::Down), now);
+        app.on_key(key(KeyCode::Down), now);
+        app.on_key(key(KeyCode::Enter), now);
+        let p = app.attach_prompt.as_ref().unwrap();
+        assert!(p.typed.ends_with("/shots/"), "{}", p.typed);
+        assert_eq!(p.matches.len(), 1);
+        app.on_key(key(KeyCode::Char('x')), now);
+        assert!(app.attach_prompt.as_ref().unwrap().matches.is_empty());
+        app.on_key(key(KeyCode::Backspace), now);
+        app.on_key(key(KeyCode::Down), now);
+        app.on_key(key(KeyCode::Enter), now);
+        assert!(app.attach_prompt.is_none());
+        assert_eq!(app.attached.len(), 1);
+        assert_eq!(app.attached[0].name, "inner.jpg");
+        std::fs::remove_dir_all(d).unwrap();
     }
 
     #[test]

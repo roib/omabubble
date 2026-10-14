@@ -8,6 +8,12 @@ same one.
 
 ## Unreleased
 
+- The `Ctrl-A` attach prompt lists the files and folders matching what you
+  type, newest first, with size and age, so a screenshot you just took is at
+  the top. Tab completes as far as the matches agree, then moves down the
+  list; ↑/↓ (or Ctrl-N/Ctrl-P) choose; Enter attaches a file or opens a
+  folder. Pasting a path into the prompt works too.
+
 ## 0.4.0 (2026-10-14)
 
 **Protocol version 5:** update the bridge and the TUI together.
