@@ -6,7 +6,8 @@ use crate::images::{Convert, Images};
 use crate::log;
 use crate::marks::ReadMarks;
 use crate::redact::redact;
-use crate::send::{Sender, Target};
+use crate::send::{Payload, Sender, Target};
+use crate::uploads::{self, Uploads};
 use crate::watch;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -66,6 +67,9 @@ pub struct ServeOpts {
 /// Per-process settings shared by client threads.
 struct Shared {
     db: PathBuf,
+    /// Where uploads wait to be sent: inside Messages' attachments folder,
+    /// which Messages (sandboxed) can read.
+    staging: PathBuf,
     contacts: Option<PathBuf>,
     sender: Sender,
     marks: Mutex<ReadMarks>,
@@ -107,8 +111,11 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
         });
     }
 
+    let staging = opts.attachments.join("omabubble");
+    uploads::clean_old(&staging, std::time::Duration::from_secs(24 * 60 * 60));
     let shared = Arc::new(Shared {
         db: opts.db.clone(),
+        staging,
         contacts: opts.contacts.clone(),
         sender: Sender::new(opts.dry_run_send),
         // Beside the socket: a private directory the bridge already owns.
@@ -185,6 +192,8 @@ fn handle_client(stream: UnixStream, shared: &Arc<Shared>, hub: &Hub) -> Result<
         }
     };
     let client_id = hub.add(tx.clone());
+    // Dropped when the connection ends, removing unfinished uploads.
+    let mut uploads = Uploads::new(shared.staging.clone());
 
     let mut reader = BufReader::new(&stream);
     loop {
@@ -216,6 +225,9 @@ fn handle_client(stream: UnixStream, shared: &Arc<Shared>, hub: &Hub) -> Result<
             }) => {
                 image_request(&db, shared, id, attachment_id, max_px, tx.clone());
                 continue;
+            }
+            Ok(Request { id, cmd }) if is_upload(&cmd) => {
+                upload_request(&db, shared, &mut uploads, id, cmd)
             }
             Ok(req) => dispatch(&db, shared, hub, req),
             Err(e) => Response::error(0, format!("bad request: {e}")),
@@ -269,6 +281,67 @@ fn image_request(
     });
 }
 
+fn is_upload(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::UploadStart { .. } | Command::UploadChunk { .. } | Command::SendFile { .. }
+    )
+}
+
+/// Uploads belong to the connection that started them.
+fn upload_request(
+    db: &Db,
+    shared: &Shared,
+    uploads: &mut Uploads,
+    id: u64,
+    cmd: Command,
+) -> Response {
+    let ok = |upload: Option<String>| Response {
+        id,
+        ok: Some(true),
+        upload,
+        ..Default::default()
+    };
+    let result = match cmd {
+        Command::UploadStart { name, size } => uploads.start(&name, size).map(|t| ok(Some(t))),
+        Command::UploadChunk {
+            upload,
+            offset,
+            data,
+        } => base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|_| anyhow::anyhow!("bad upload data"))
+            .and_then(|bytes| uploads.chunk(&upload, offset, &bytes))
+            .map(|()| ok(None)),
+        Command::SendFile {
+            upload,
+            to,
+            chat_guid,
+        } => uploads.finish(&upload).and_then(|path| {
+            send(
+                db,
+                &shared.sender,
+                to.as_deref(),
+                chat_guid.as_deref(),
+                Payload::File(&path),
+            )
+            // Never the file name or recipients in the log.
+            .inspect_err(|e| {
+                log!("file send failed: {}", redact(&format!("{e:#}")));
+                uploads::discard(&path);
+            })
+            .map(|service| Response {
+                id,
+                ok: Some(true),
+                service: Some(service),
+                ..Default::default()
+            })
+        }),
+        _ => unreachable!("only upload commands come here"),
+    };
+    result.unwrap_or_else(|e| Response::error(id, format!("{e:#}")))
+}
+
 fn reply(tx: &Tx<String>, resp: Response) {
     if let Ok(line) = serde_json::to_string(&resp) {
         let _ = tx.send(line);
@@ -279,8 +352,11 @@ fn dispatch(db: &Db, shared: &Shared, hub: &Hub, req: Request) -> Response {
     let id = req.id;
     let sender = &shared.sender;
     let result = match req.cmd {
-        Command::Image { .. } => {
-            return Response::error(id, "image requests are handled per connection");
+        Command::Image { .. }
+        | Command::UploadStart { .. }
+        | Command::UploadChunk { .. }
+        | Command::SendFile { .. } => {
+            return Response::error(id, "handled per connection");
         }
         Command::People { names } => db.handle_ids().map(|handles| Response {
             id,
@@ -341,15 +417,21 @@ fn dispatch(db: &Db, shared: &Shared, hub: &Hub, req: Request) -> Response {
             to,
             chat_guid,
             text,
-        } => send(db, sender, to.as_deref(), chat_guid.as_deref(), &text)
-            // Log the error only: never message text or recipients.
-            .inspect_err(|e| log!("send failed: {}", redact(&format!("{e:#}"))))
-            .map(|service| Response {
-                id,
-                ok: Some(true),
-                service: Some(service),
-                ..Default::default()
-            }),
+        } => send(
+            db,
+            sender,
+            to.as_deref(),
+            chat_guid.as_deref(),
+            Payload::Text(&text),
+        )
+        // Log the error only: never message text or recipients.
+        .inspect_err(|e| log!("send failed: {}", redact(&format!("{e:#}"))))
+        .map(|service| Response {
+            id,
+            ok: Some(true),
+            service: Some(service),
+            ..Default::default()
+        }),
     };
     result.unwrap_or_else(|e| Response::error(id, format!("{e:#}")))
 }
@@ -359,18 +441,18 @@ fn send(
     sender: &Sender,
     to: Option<&str>,
     chat_guid: Option<&str>,
-    text: &str,
+    payload: Payload,
 ) -> Result<String> {
     match (to, chat_guid) {
-        (Some(to), None) => sender.send(Target::Handle(to), text),
-        (None, Some(guid)) => match sender.send(Target::Chat(guid), text) {
+        (Some(to), None) => sender.send(Target::Handle(to), payload),
+        (None, Some(guid)) => match sender.send(Target::Chat(guid), payload) {
             // Messages rejects some chat ids it lists in chat.db (notably email
             // chats) with -1728 before sending anything. One-on-one chats can go
             // by address instead. Other errors aren't retried, to avoid double sends.
             Err(e) if format!("{e:#}").contains("(-1728)") => match db.direct_handle(guid)? {
                 Some(handle) => {
                     log!("chat id not accepted by Messages; sending by address");
-                    sender.send(Target::Handle(&handle), text)
+                    sender.send(Target::Handle(&handle), payload)
                 }
                 None => Err(e),
             },
@@ -396,7 +478,7 @@ mod tests {
             &sender,
             None,
             Some("iMessage;-;friend@example.com"),
-            "hi",
+            Payload::Text("hi"),
         );
         assert_eq!(ok.unwrap(), "dry-run");
         let group = send(
@@ -404,7 +486,7 @@ mod tests {
             &sender,
             None,
             Some("iMessage;+;chat000000000000000001"),
-            "hi",
+            Payload::Text("hi"),
         );
         assert!(
             group.unwrap_err().to_string().contains("-1728"),
@@ -562,6 +644,71 @@ mod tests {
         let saved = std::fs::read_to_string(socket.with_file_name("read.json")).unwrap();
         assert_eq!(saved, r#"{"1":8}"#);
 
+        // A file: uploaded in pieces, staged inside the attachments folder
+        // under a safe name, then sent.
+        let staging = home.join("Library/Messages/Attachments/omabubble");
+        writeln!(
+            w,
+            r#"{{"id":10,"cmd":"upload_start","name":"../../x/photo.jpg","size":6}}"#
+        )
+        .unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        let token = r.upload.unwrap();
+        for (id, offset, data) in [(11, 0, "YWJj"), (12, 3, "ZGVm")] {
+            writeln!(
+                w,
+                r#"{{"id":{id},"cmd":"upload_chunk","upload":"{token}","offset":{offset},"data":"{data}"}}"#
+            )
+            .unwrap();
+            let ServerMsg::Response(r) = next() else {
+                panic!()
+            };
+            assert_eq!(r.ok, Some(true), "{:?}", r.error);
+        }
+        let staged = staging.join(&token).join("photo.jpg");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"abcdef");
+        writeln!(
+            w,
+            r#"{{"id":13,"cmd":"send_file","upload":"{token}","chat_guid":"iMessage;-;+15550000001"}}"#
+        )
+        .unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        assert_eq!(r.service.as_deref(), Some("dry-run"), "{:?}", r.error);
+        assert!(staged.exists(), "stays for Messages to read");
+        // Sent once only.
+        writeln!(
+            w,
+            r#"{{"id":14,"cmd":"send_file","upload":"{token}","chat_guid":"iMessage;-;+15550000001"}}"#
+        )
+        .unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        assert!(r.error.unwrap().contains("no such upload"));
+        // An incomplete upload can't be sent.
+        writeln!(
+            w,
+            r#"{{"id":15,"cmd":"upload_start","name":"a.pdf","size":9}}"#
+        )
+        .unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        let partial = r.upload.unwrap();
+        writeln!(
+            w,
+            r#"{{"id":16,"cmd":"send_file","upload":"{partial}","to":"+15550000001"}}"#
+        )
+        .unwrap();
+        let ServerMsg::Response(r) = next() else {
+            panic!()
+        };
+        assert!(r.error.unwrap().contains("incomplete"));
+
         writeln!(w, "not json").unwrap();
         let ServerMsg::Response(r) = next() else {
             panic!()
@@ -574,5 +721,13 @@ mod tests {
             panic!()
         };
         assert_eq!(r.error.as_deref(), Some("request too long"));
+
+        // The connection is gone: its unfinished upload goes with it.
+        let start = std::time::Instant::now();
+        while staging.join(&partial).exists() {
+            assert!(start.elapsed().as_secs() < 5, "partial upload kept");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(staged.exists());
     }
 }

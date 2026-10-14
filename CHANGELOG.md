@@ -8,6 +8,19 @@ same one.
 
 ## Unreleased
 
+**Protocol version 5:** update the bridge and the TUI together.
+
+- **Send files.** Drop a file onto the terminal, paste its path, or press
+  `Ctrl-A` to type one (Tab completes). Attachments show above the input;
+  Backspace in an empty input takes one off. Files are uploaded in pieces
+  over the existing connection with progress shown, sent through Messages,
+  and confirmed when they appear in chat.db; text sent with them follows
+  after. A failed file goes back on the attachments with Enter.
+- The bridge stages uploads inside `~/Library/Messages/Attachments/omabubble`
+  under its own folder and file names, limits them to 100 MB and four at a
+  time per connection, deletes unfinished ones when the connection ends and
+  sent ones after a day.
+
 ## 0.3.2 (2026-10-10)
 
 - Over SSH, `o` opens the link again, and also copies it. 0.3.1 only copied

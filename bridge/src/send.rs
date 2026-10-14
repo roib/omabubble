@@ -27,6 +27,33 @@ const TO_CHAT: &str = r#"on run argv
 tell application "Messages" to send (item 2 of argv) to chat id (item 1 of argv)
 end run"#;
 
+// Files: the same, with item 2 a path made into a file reference.
+const FILE_TO_HANDLE: &str = r#"on run argv
+set targetHandle to item 1 of argv
+set theFile to POSIX file (item 2 of argv)
+set serviceName to item 3 of argv
+tell application "Messages"
+if serviceName is "SMS" then
+set targetAccount to 1st account whose service type = SMS
+else
+set targetAccount to 1st account whose service type = iMessage
+end if
+send theFile to participant targetHandle of targetAccount
+end tell
+end run"#;
+
+const FILE_TO_CHAT: &str = r#"on run argv
+set theFile to POSIX file (item 2 of argv)
+tell application "Messages" to send theFile to chat id (item 1 of argv)
+end run"#;
+
+/// Text, or a file staged where Messages can read it.
+#[derive(Clone, Copy)]
+pub enum Payload<'a> {
+    Text(&'a str),
+    File(&'a std::path::Path),
+}
+
 /// Long enough to walk to the Mac and answer an Automation permission
 /// dialog: killing osascript dismisses the dialog.
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -64,27 +91,36 @@ impl Sender {
     }
 
     /// Returns the service the message went out on.
-    pub fn send(&self, target: Target, text: &str) -> Result<String> {
-        if text.trim().is_empty() {
-            bail!("empty message");
-        }
+    pub fn send(&self, target: Target, payload: Payload) -> Result<String> {
+        let (to_handle, to_chat, item) = match payload {
+            Payload::Text(text) => {
+                if text.trim().is_empty() {
+                    bail!("empty message");
+                }
+                (TO_HANDLE, TO_CHAT, text)
+            }
+            Payload::File(path) => match path.to_str() {
+                Some(p) if path.is_file() => (FILE_TO_HANDLE, FILE_TO_CHAT, p),
+                _ => bail!("file to send is missing"),
+            },
+        };
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         match target {
             Target::Handle(handle) => {
-                match self.osascript(TO_HANDLE, &[handle, text, "iMessage"]) {
+                match self.osascript(to_handle, &[handle, item, "iMessage"]) {
                     Ok(svc) => Ok(svc.unwrap_or_else(|| "iMessage".into())),
                     Err(e) => {
                         log!(
                             "iMessage send failed ({}); retrying as SMS",
                             redact(&e.to_string())
                         );
-                        let svc = self.osascript(TO_HANDLE, &[handle, text, "SMS"])?;
+                        let svc = self.osascript(to_handle, &[handle, item, "SMS"])?;
                         Ok(svc.unwrap_or_else(|| "SMS".into()))
                     }
                 }
             }
             Target::Chat(guid) => {
-                let svc = self.osascript(TO_CHAT, &[guid, text])?;
+                let svc = self.osascript(to_chat, &[guid, item])?;
                 Ok(svc.unwrap_or_else(|| guid.split(';').next().unwrap_or("iMessage").to_string()))
             }
         }
@@ -98,7 +134,7 @@ impl Sender {
         }
         cmd.args(args);
 
-        if self.dry_run && self.fail_chat_ids && script == TO_CHAT {
+        if self.dry_run && self.fail_chat_ids && (script == TO_CHAT || script == FILE_TO_CHAT) {
             bail!(
                 "osascript failed: execution error: Messages got an error: Can’t get chat id. (-1728)"
             );

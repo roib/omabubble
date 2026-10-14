@@ -8,6 +8,7 @@ mod redact;
 mod relay;
 mod send;
 mod server;
+mod uploads;
 mod watch;
 
 use anyhow::{Context, Result};

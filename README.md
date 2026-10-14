@@ -200,6 +200,8 @@ prints only counts.
 | | `Ctrl-W` / `Ctrl-U` | Delete word / clear |
 | | `:` + two letters | Emoji completion (`:thu` → 👍); Tab/↑↓ choose, Enter insert, Esc close. A full `:fire:` converts when you type a space |
 | | `Ctrl-E` | Emoji picker: recently used first, type to search by shortcode or name |
+| | `Ctrl-A` | Attach a file: type its path, `Tab` completes, `Enter` attaches |
+| | `Backspace` in an empty input | Take off the last attached file |
 | | `Esc` | Back to the list (what you typed stays as that chat's draft) |
 | Messages pane | `j`/`k` | Select a message |
 | | `y` | Copy the selected message |
@@ -222,6 +224,15 @@ emptying the input clears it. Drafts are saved to
 `~/.local/state/omabubble/drafts.json` (readable only by you), about two seconds
 after you stop typing and when you quit, so they survive restarts. They stay
 on this machine.
+
+**Sending files:** drop a file onto the terminal (foot, kitty and Ghostty
+paste its path), paste a path, or press `Ctrl-A` and type one. It shows above
+the input as `📎 name size`; attach several if you like, add text or not, and
+press Enter. Files go first, one at a time, then the text, so they arrive in
+that order; each shows `uploading 40%` until it's on the Mac, then `sending…`
+until Messages records it. Files are sent as they are, up to 100 MB (about
+iMessage's own limit). The file has to be on the machine omabubble runs on: a
+path dropped onto a terminal on another computer is pasted as text instead.
 
 Pictures show as thumbnails in the conversation, 8 rows tall, loaded as they
 scroll into view. foot draws them with Sixel, kitty and Ghostty with the Kitty
@@ -255,8 +266,8 @@ or set `mouse = false` to leave the mouse to the terminal entirely.
 - Edits and unsends from other people (or your phone) show up, but you can't
   edit or unsend from the TUI: AppleScript has no command for either.
 - Reading a chat here doesn't mark it read on the Mac or phone.
-- Sending your own read receipts, typing indicators, attachments and
-  tapbacks isn't supported.
+- Sending your own read receipts, typing indicators and tapbacks isn't
+  supported.
 - New messages only arrive while the Mac is awake and online. After a
   reconnect, the TUI catches up on everything it missed.
 
@@ -299,6 +310,14 @@ What the design protects against, and what it doesn't.
   included) and sends the orientation separately. Previews over 2 MB are
   refused. Nothing is
   cached on disk on either machine.
+- **Sending files:** the TUI uploads a file in pieces over the same SSH
+  connection; it never names a path on the Mac. The bridge writes it to a
+  folder of its own choosing inside `~/Library/Messages/Attachments/omabubble`
+  (Messages is sandboxed and sends files from there), under a cleaned-up
+  name, checks the size against what was announced (100 MB at most, four
+  uploads per connection at once), and passes the path to `osascript` as
+  argv. Unfinished uploads are deleted when their connection ends, and sent
+  files after a day.
 - **Input handling:** recipients and message text reach `osascript` as
   argv, never spliced into the script; all SQL is parameterised except
   integer chat ids; request lines over 1 MiB are rejected.

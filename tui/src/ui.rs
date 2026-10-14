@@ -2,6 +2,7 @@
 //! (scroll clamping, total lines, pane height).
 
 use crate::app::{App, Focus, Item, PendState, Status, Target, View, attachment_label, preview};
+use crate::attach;
 use crate::pics::{FULL_PX, Pic, Pics, THUMB_MAX_COLS, THUMB_ROWS};
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use proto::{Kind, Message};
@@ -26,7 +27,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let rows = input_layout(&app.input, app.cursor, width)
             .0
             .len()
-            .clamp(1, MAX_INPUT_ROWS) as u16;
+            .clamp(1, MAX_INPUT_ROWS) as u16
+            + u16::from(!app.attached.is_empty());
         Layout::vertical([
             Constraint::Min(5),
             Constraint::Length(rows + 2),
@@ -46,6 +48,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.link_picker.is_some() {
         draw_link_picker(f, app);
+    }
+    if app.attach_prompt.is_some() {
+        draw_attach_prompt(f, app);
     }
     match app.emoji.as_ref().map(|p| p.inline.is_some()) {
         Some(true) => draw_emoji_inline(f, app, input_area),
@@ -451,16 +456,34 @@ fn build_lines(
                 incoming(&mut lines, width, m, who, pics, &mut placements)
             }
             Item::Pending(p) => {
-                let (word, style) = match &p.state {
-                    PendState::Sending => ("sending…", Style::new().dark_gray()),
-                    PendState::Failed(_) => ("✗ failed", Style::new().red()),
-                    PendState::Unconfirmed => ("? unconfirmed", Style::new().yellow()),
+                let (word, style) = match (&p.state, &p.file) {
+                    (PendState::Sending, _) if p.queued => {
+                        ("waiting…".into(), Style::new().dark_gray())
+                    }
+                    (PendState::Sending, Some(f)) if f.sent < f.att.size => (
+                        format!("uploading {}%", f.sent * 100 / f.att.size.max(1)),
+                        Style::new().dark_gray(),
+                    ),
+                    (PendState::Sending, _) => ("sending…".into(), Style::new().dark_gray()),
+                    (PendState::Failed(_), _) => ("✗ failed".into(), Style::new().red()),
+                    (PendState::Unconfirmed, _) => ("? unconfirmed".into(), Style::new().yellow()),
                 };
                 let status = vec![Span::styled(word, style)];
+                let body = match &p.file {
+                    Some(f) => Body::Text(
+                        String::new(),
+                        vec![Att::Label(format!(
+                            "📎 {} ({})",
+                            f.att.name,
+                            attach::size_text(f.att.size)
+                        ))],
+                    ),
+                    None => Body::Text(p.text.clone(), vec![]),
+                };
                 outgoing(
                     &mut lines,
                     width,
-                    &Body::Text(p.text.clone(), vec![]),
+                    &body,
                     status,
                     false,
                     false,
@@ -815,7 +838,23 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered()
         .title(truncate(&title, area.width.saturating_sub(4) as usize))
         .border_style(border(focused));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
+    f.render_widget(block, area);
+    // Attached files: one row of chips above the text.
+    if !app.attached.is_empty() && inner.height > 1 {
+        let mut chips: Vec<Span> = Vec::new();
+        for a in &app.attached {
+            chips.push(Span::styled(
+                format!(" 📎 {} {} ", a.name, attach::size_text(a.size)),
+                Style::new().black().on_light_blue(),
+            ));
+            chips.push(Span::raw(" "));
+        }
+        let row = Rect { height: 1, ..inner };
+        f.render_widget(Paragraph::new(Line::from(chips)), row);
+        inner.y += 1;
+        inner.height -= 1;
+    }
     let (rows, (crow, ccol)) = input_layout(&app.input, app.cursor, inner.width.max(1) as usize);
     let first = (crow + 1).saturating_sub(inner.height as usize);
     let text: Vec<Line> = rows
@@ -824,7 +863,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         .take(inner.height as usize)
         .map(Line::from)
         .collect();
-    f.render_widget(Paragraph::new(text).block(block), area);
+    f.render_widget(Paragraph::new(text), inner);
     if focused {
         f.set_cursor_position((inner.x + ccol as u16, inner.y + (crow - first) as u16));
     }
@@ -923,6 +962,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     });
     let hints = match (app.popup.is_some(), app.focus) {
         _ if app.link_picker.is_some() => "j/k choose  Enter open  Esc cancel",
+        _ if app.attach_prompt.is_some() => "Tab complete  Enter attach  Esc cancel",
         _ if viewer_hint.is_some() => viewer_hint.unwrap(),
         _ if emoji_hint.is_some() => emoji_hint.unwrap(),
         (true, _) => "Enter next/open  Tab switch  Esc cancel",
@@ -941,7 +981,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 "j/k select  y copy  Y +meta  v range  PgUp older  Esc back"
             }
         }
-        (_, Focus::Input) => "Enter send  Alt-Enter newline  PgUp/PgDn scroll  Esc back",
+        (_, Focus::Input) if !app.attached.is_empty() && app.input.is_empty() => {
+            "Enter send  Backspace remove file  Ctrl-A attach  Esc back"
+        }
+        (_, Focus::Input) => "Enter send  Alt-Enter newline  Ctrl-A attach  Esc back",
     };
     let used: usize = left.iter().map(|s| s.content.width()).sum();
     let avail = (area.width as usize).saturating_sub(used + 1);
@@ -950,6 +993,49 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(hints, Style::new().dark_gray()));
     }
     f.render_widget(Paragraph::new(Line::from(left)), area);
+}
+
+/// Ctrl+A: the path of a file to attach, with Tab completion.
+fn draw_attach_prompt(f: &mut Frame, app: &App) {
+    let Some(typed) = &app.attach_prompt else {
+        return;
+    };
+    let area = f.area();
+    let w = 70.min(area.width);
+    let h = 5.min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(" Attach a file ")
+        .border_style(Style::new().fg(Color::LightBlue));
+    let inner = block.inner(rect);
+    // Keep the end of a long path in view.
+    let room = (inner.width as usize).saturating_sub(1);
+    let shown: String = if typed.width() > room {
+        let tail: Vec<char> = typed
+            .chars()
+            .rev()
+            .scan(0, |acc, c| {
+                *acc += c.width().unwrap_or(0);
+                (*acc < room).then_some(c)
+            })
+            .collect();
+        tail.into_iter().rev().collect()
+    } else {
+        typed.clone()
+    };
+    let lines = vec![
+        Line::from(shown.clone()),
+        Line::from(""),
+        Line::from("Tab complete  Enter attach  Esc cancel".dark_gray()),
+    ];
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+    f.set_cursor_position((inner.x + shown.width() as u16, inner.y));
 }
 
 /// Which of a message's links to open: one per row, the chosen one marked.

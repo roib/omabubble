@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -51,6 +51,27 @@ pub enum Command {
         attachment_id: i64,
         max_px: u32,
     },
+    /// Start uploading a file to send; the response's `upload` names it.
+    /// `name` is only a suggestion: the bridge keeps a safe version of it.
+    UploadStart {
+        name: String,
+        size: u64,
+    },
+    /// The next piece of an upload, in order: `offset` is the bytes received
+    /// so far, `data` is base64 (each piece well under the 1 MiB line limit).
+    UploadChunk {
+        upload: String,
+        offset: u64,
+        data: String,
+    },
+    /// Send a complete upload through Messages, like `send` does text.
+    SendFile {
+        upload: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        chat_guid: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -68,6 +89,9 @@ pub struct Response {
     /// EXIF orientation (1–8) to apply to `image`; its metadata is stripped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orientation: Option<u8>,
+    /// The id of an upload, answering `upload_start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

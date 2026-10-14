@@ -1,11 +1,13 @@
 //! Application state and logic. No terminal or process I/O here: side effects
 //! are queued in `effects` and carried out by the main loop.
 
+use crate::attach::{self, Attached};
 use crate::config::{Config, Person};
 use crate::emoji;
 use crate::links;
 use crate::phone;
 use crate::pics::{self, Pics};
+use base64::Engine;
 use chrono::{Local, TimeZone};
 use proto::{
     Chat, Command, Event, Kind, Message, PROTOCOL_VERSION, PersonGroup, Request, Response,
@@ -105,6 +107,27 @@ pub struct Pending {
     pub acked_at: Option<Instant>,
     pub ts: i64,
     pub state: PendState,
+    /// A file to send instead of text.
+    pub file: Option<OutFile>,
+    /// Waiting for earlier files to finish, so messages arrive in order.
+    pub queued: bool,
+}
+
+/// An attached file on its way to the Mac.
+#[derive(Debug, Clone)]
+pub struct OutFile {
+    pub att: Attached,
+    /// Bytes the bridge has received.
+    pub sent: u64,
+    /// The bridge's id for the upload, once started.
+    pub upload: Option<String>,
+}
+
+impl Pending {
+    /// Still uploading: the send timeouts don't apply yet.
+    fn uploading(&self) -> bool {
+        self.file.as_ref().is_some_and(|f| f.sent < f.att.size)
+    }
 }
 
 /// What the message pane is showing.
@@ -196,6 +219,9 @@ enum ReqKind {
     History { chat_id: i64, older: bool },
     Since,
     Send { local_id: u64 },
+    UploadStart { local_id: u64 },
+    UploadChunk { local_id: u64, len: u64 },
+    SendFile { local_id: u64 },
     MarkRead,
     Image { attachment_id: i64, px: u32 },
 }
@@ -291,6 +317,12 @@ pub struct App {
     pub pics: Pics,
     pub viewer: Option<Viewer>,
     pub link_picker: Option<LinkPicker>,
+    /// Files attached to the next message in the open chat.
+    pub attached: Vec<Attached>,
+    /// Other chats' attachments, kept while you switch (not saved to disk).
+    attached_by_chat: HashMap<String, Vec<Attached>>,
+    /// The Ctrl+A "attach a file" path being typed.
+    pub attach_prompt: Option<String>,
     /// No display in this session, as over SSH. `o` still tries to open the
     /// link (Omarchy's launcher reaches the desktop even from SSH on the same
     /// machine), and also copies it, for when there's no desktop at all.
@@ -354,6 +386,9 @@ impl App {
             pics: Pics::default(),
             viewer: None,
             link_picker: None,
+            attached: Vec::new(),
+            attached_by_chat: HashMap::new(),
+            attach_prompt: None,
             copy_links_too: false,
             list_state: ListState::default(),
         }
@@ -379,11 +414,17 @@ impl App {
         self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
         for (_, kind) in self.inflight.drain() {
             match kind {
-                ReqKind::Send { local_id } => {
+                ReqKind::Send { local_id } | ReqKind::SendFile { local_id } => {
                     if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id)
                         && p.state == PendState::Sending
                     {
                         p.state = PendState::Unconfirmed;
+                    }
+                }
+                // The bridge drops an unfinished upload with the connection.
+                ReqKind::UploadStart { local_id } | ReqKind::UploadChunk { local_id, .. } => {
+                    if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
+                        p.state = PendState::Failed("connection lost while uploading".into());
                     }
                 }
                 ReqKind::History { .. } => {
@@ -449,6 +490,8 @@ impl App {
                 }
                 self.request(Command::People { names: self.names }, ReqKind::People);
                 self.request(Command::ListChats { limit: CHAT_LIMIT }, ReqKind::ListChats);
+                // Sends that waited behind an upload the connection dropped.
+                self.pump_sends(now);
                 // Self-heal the open chat after a reconnect.
                 if let Some(View {
                     target: Target::Chat(id),
@@ -507,12 +550,10 @@ impl App {
         };
         if let Some(err) = r.error {
             match kind {
-                ReqKind::Send { local_id } => {
-                    if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
-                        p.state = PendState::Failed(err.clone());
-                    }
-                    self.hint(format!("✗ send failed: {err}"), now);
-                }
+                ReqKind::Send { local_id }
+                | ReqKind::UploadStart { local_id }
+                | ReqKind::UploadChunk { local_id, .. }
+                | ReqKind::SendFile { local_id } => self.fail(local_id, err),
                 ReqKind::History { .. } => {
                     if let Some(v) = &mut self.view {
                         v.loading = false;
@@ -537,10 +578,36 @@ impl App {
                 }
             }
             // Confirmation comes from the echo in chat.db; this only starts the clock.
-            ReqKind::Send { local_id } => {
+            ReqKind::Send { local_id } | ReqKind::SendFile { local_id } => {
                 if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
                     p.acked_at = Some(now);
                 }
+                self.pump_sends(now);
+            }
+            ReqKind::UploadStart { local_id } => {
+                let Some(upload) = r.upload else {
+                    return self.fail(local_id, "the bridge didn't start the upload".into());
+                };
+                if let Some(f) = self
+                    .pending
+                    .iter_mut()
+                    .find(|p| p.local_id == local_id)
+                    .and_then(|p| p.file.as_mut())
+                {
+                    f.upload = Some(upload);
+                }
+                self.send_chunk(local_id, now);
+            }
+            ReqKind::UploadChunk { local_id, len } => {
+                if let Some(f) = self
+                    .pending
+                    .iter_mut()
+                    .find(|p| p.local_id == local_id)
+                    .and_then(|p| p.file.as_mut())
+                {
+                    f.sent += len;
+                }
+                self.send_chunk(local_id, now);
             }
             // Counts change through the `read` event the bridge broadcasts.
             ReqKind::MarkRead => {}
@@ -591,6 +658,9 @@ impl App {
             self.effects.push(Effect::Reconnect);
         }
         for p in &mut self.pending {
+            if p.queued || p.uploading() {
+                continue;
+            }
             let overdue = match p.acked_at {
                 Some(acked) => now.duration_since(acked) > UNCONFIRMED_AFTER,
                 None => now.duration_since(p.sent_at) > SEND_TIMEOUT,
@@ -988,8 +1058,17 @@ impl App {
         let cc = self.country_code.clone();
         let candidate = |p: &Pending| {
             matches!(p.state, PendState::Sending | PendState::Unconfirmed)
+                && !p.queued
                 && m.rowid > p.after_rowid
-                && p.text.trim() == m.text.trim()
+                && match &p.file {
+                    // A file's echo is a message with an attachment and no text.
+                    Some(f) => {
+                        f.sent >= f.att.size
+                            && !m.attachments.is_empty()
+                            && m.text.trim().is_empty()
+                    }
+                    None => p.text.trim() == m.text.trim(),
+                }
         };
         let direct = self.pending.iter().position(|p| {
             candidate(p)
@@ -1300,42 +1379,51 @@ impl App {
 
     fn send_input(&mut self, now: Instant) {
         let text = self.input.trim_end().to_string();
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.attached.is_empty() {
             return;
         }
         let Some(target) = self.view.as_ref().map(|v| v.target.clone()) else {
             return;
         };
-        let cmd = match &target {
-            Target::Chat(id) => match self.chats.iter().find(|c| c.chat_id == *id) {
-                Some(c) => Command::Send {
-                    to: None,
-                    chat_guid: Some(c.guid.clone()),
-                    text: text.clone(),
-                },
-                None => return self.flash_msg("chat not loaded yet", now),
-            },
-            Target::Draft(h) => Command::Send {
-                to: Some(h.clone()),
-                chat_guid: None,
-                text: text.clone(),
-            },
-        };
-        self.next_local += 1;
-        let local_id = self.next_local;
-        if !self.request(cmd, ReqKind::Send { local_id }) {
+        if self.route(&target).is_none() {
+            return self.flash_msg("chat not loaded yet", now);
+        }
+        if self.status != Status::Connected {
             return self.flash_msg("not connected: message not sent", now);
         }
-        self.pending.push(Pending {
-            local_id,
-            target,
-            text,
-            after_rowid: self.max_seen,
-            sent_at: now,
-            acked_at: None,
-            ts: chrono::Utc::now().timestamp(),
-            state: PendState::Sending,
-        });
+        // Files first, then the text: each waits for the files before it.
+        let files = std::mem::take(&mut self.attached);
+        let mut items: Vec<(String, Option<OutFile>)> = files
+            .into_iter()
+            .map(|att| {
+                (
+                    String::new(),
+                    Some(OutFile {
+                        att,
+                        sent: 0,
+                        upload: None,
+                    }),
+                )
+            })
+            .collect();
+        if !text.trim().is_empty() {
+            items.push((text, None));
+        }
+        for (text, file) in items {
+            self.next_local += 1;
+            self.pending.push(Pending {
+                local_id: self.next_local,
+                target: target.clone(),
+                text,
+                after_rowid: self.max_seen,
+                sent_at: now,
+                acked_at: None,
+                ts: chrono::Utc::now().timestamp(),
+                state: PendState::Sending,
+                file,
+                queued: true,
+            });
+        }
         self.input.clear();
         self.cursor = 0;
         self.input_edited = None;
@@ -1344,6 +1432,125 @@ impl App {
             v.scroll = 0;
             v.appended = true;
         }
+        self.pump_sends(now);
+    }
+
+    /// Where a send goes: an address for a new conversation, otherwise the
+    /// chat's id. `None` if the chat isn't loaded.
+    fn route(&self, target: &Target) -> Option<(Option<String>, Option<String>)> {
+        match target {
+            Target::Chat(id) => self
+                .chats
+                .iter()
+                .find(|c| c.chat_id == *id)
+                .map(|c| (None, Some(c.guid.clone()))),
+            Target::Draft(h) => Some((Some(h.clone()), None)),
+        }
+    }
+
+    /// Starts queued sends in order. Text goes straight away; a file is
+    /// uploaded and sent before anything queued after it starts.
+    fn pump_sends(&mut self, now: Instant) {
+        loop {
+            let busy = self.pending.iter().any(|p| {
+                p.file.is_some()
+                    && !p.queued
+                    && p.state == PendState::Sending
+                    && p.acked_at.is_none()
+            });
+            if busy {
+                return;
+            }
+            let Some(i) = self
+                .pending
+                .iter()
+                .position(|p| p.queued && p.state == PendState::Sending)
+            else {
+                return;
+            };
+            let p = &mut self.pending[i];
+            p.queued = false;
+            p.sent_at = now;
+            let (local_id, target, text) = (p.local_id, p.target.clone(), p.text.clone());
+            let file = p.file.as_ref().map(|f| (f.att.name.clone(), f.att.size));
+            let started = match (file, self.route(&target)) {
+                (_, None) => false,
+                (Some((name, size)), Some(_)) => self.request(
+                    Command::UploadStart { name, size },
+                    ReqKind::UploadStart { local_id },
+                ),
+                (None, Some((to, chat_guid))) => self.request(
+                    Command::Send {
+                        to,
+                        chat_guid,
+                        text,
+                    },
+                    ReqKind::Send { local_id },
+                ),
+            };
+            if !started {
+                self.fail(
+                    local_id,
+                    "not sent: not connected, or the chat is gone".into(),
+                );
+            }
+        }
+    }
+
+    /// Sends the next piece of an upload, or the file once it's all there.
+    fn send_chunk(&mut self, local_id: u64, now: Instant) {
+        let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) else {
+            return;
+        };
+        let target = p.target.clone();
+        let Some(f) = &p.file else { return };
+        let Some(upload) = f.upload.clone() else {
+            return;
+        };
+        let (att, offset) = (f.att.clone(), f.sent);
+        if offset >= att.size {
+            // The send itself gets the usual timeouts from here.
+            p.sent_at = now;
+            let started = match self.route(&target) {
+                Some((to, chat_guid)) => self.request(
+                    Command::SendFile {
+                        upload,
+                        to,
+                        chat_guid,
+                    },
+                    ReqKind::SendFile { local_id },
+                ),
+                None => false,
+            };
+            if !started {
+                self.fail(local_id, "not sent: connection lost".into());
+            }
+            return;
+        }
+        let data = match att.read_chunk(offset) {
+            Ok(d) if !d.is_empty() => d,
+            Ok(_) => return self.fail(local_id, format!("{} got shorter while sending", att.name)),
+            Err(e) => return self.fail(local_id, format!("can't read {}: {e}", att.name)),
+        };
+        let len = data.len() as u64;
+        let cmd = Command::UploadChunk {
+            upload,
+            offset,
+            data: base64::engine::general_purpose::STANDARD.encode(&data),
+        };
+        if !self.request(cmd, ReqKind::UploadChunk { local_id, len }) {
+            self.fail(local_id, "not sent: connection lost".into());
+        }
+    }
+
+    /// Marks a send failed, says why, and moves on to the next.
+    fn fail(&mut self, local_id: u64, err: String) {
+        if let Some(p) = self.pending.iter_mut().find(|p| p.local_id == local_id) {
+            p.state = PendState::Failed(err.clone());
+            p.queued = false;
+        }
+        self.hint(format!("✗ send failed: {err}"), Instant::now());
+        self.pump_sends(Instant::now());
     }
 
     fn submit_popup(&mut self, now: Instant) {
@@ -1416,6 +1623,12 @@ impl App {
             return;
         };
         let key = self.draft_key(&target);
+        if self.attached.is_empty() {
+            self.attached_by_chat.remove(&key);
+        } else {
+            self.attached_by_chat
+                .insert(key.clone(), self.attached.clone());
+        }
         let changed = if self.input.trim().is_empty() {
             self.drafts.remove(&key).is_some()
         } else {
@@ -1438,6 +1651,14 @@ impl App {
         };
         self.cursor = self.input.len();
         self.input_edited = None;
+        self.attached = match self.view.as_ref().map(|v| v.target.clone()) {
+            Some(target) => self
+                .attached_by_chat
+                .get(&self.draft_key(&target))
+                .cloned()
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
     }
 
     /// Saves the open chat's draft now, e.g. before quitting.
@@ -1501,7 +1722,7 @@ impl App {
     // ---------------------------------------------------------------- input
 
     pub fn on_mouse(&mut self, ev: MouseEvent, now: Instant) {
-        if self.popup.is_some() || self.link_picker.is_some() {
+        if self.popup.is_some() || self.link_picker.is_some() || self.attach_prompt.is_some() {
             return;
         }
         let at = Position::new(ev.column, ev.row);
@@ -1606,8 +1827,59 @@ impl App {
             return;
         }
         self.focus = Focus::Input;
+        // A dropped file (or pasted path) is attached, not typed.
+        if let Some(paths) = attach::pasted_paths(&text) {
+            for path in paths {
+                self.attach(&path, Instant::now());
+            }
+            return;
+        }
         self.input.insert_str(self.cursor, &text);
         self.cursor += text.len();
+    }
+
+    /// Adds a file to the next message, saying so.
+    fn attach(&mut self, path: &std::path::Path, now: Instant) -> bool {
+        match Attached::new(path) {
+            Ok(a) => {
+                self.flash_msg(
+                    format!("Attached {} ({})", a.name, attach::size_text(a.size)),
+                    now,
+                );
+                if !self.attached.iter().any(|x| x.path == a.path) {
+                    self.attached.push(a);
+                }
+                true
+            }
+            Err(e) => {
+                self.hint(format!("can't attach: {e}"), now);
+                false
+            }
+        }
+    }
+
+    /// Ctrl+A: type a path, Tab completes, Enter attaches.
+    fn attach_prompt_key(&mut self, key: KeyEvent, now: Instant) {
+        let Some(typed) = &mut self.attach_prompt else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.attach_prompt = None,
+            KeyCode::Tab => *typed = attach::complete(typed),
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => typed.clear(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => typed.push(c),
+            KeyCode::Enter => {
+                let path = std::path::PathBuf::from(typed.trim());
+                if self.attach(&path, now) {
+                    self.attach_prompt = None;
+                    self.focus = Focus::Input;
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) {
@@ -1641,6 +1913,13 @@ impl App {
         }
         if self.link_picker.is_some() {
             return self.link_picker_key(key, now);
+        }
+        if self.attach_prompt.is_some() {
+            return self.attach_prompt_key(key, now);
+        }
+        if ctrl && key.code == KeyCode::Char('a') && self.view.is_some() {
+            self.attach_prompt = Some("~/".into());
+            return;
         }
         if ctrl && key.code == KeyCode::Char('e') && self.view.is_some() {
             self.focus = Focus::Input;
@@ -1916,12 +2195,17 @@ impl App {
                 // A failed or unconfirmed message goes back into the input to resend.
                 let restore = self.selected_pending().and_then(|id| {
                     let i = self.pending.iter().position(|p| p.local_id == id)?;
-                    (self.pending[i].state != PendState::Sending)
-                        .then(|| self.pending.remove(i).text)
+                    (self.pending[i].state != PendState::Sending).then(|| self.pending.remove(i))
                 });
-                if let Some(text) = restore {
-                    self.input = text;
-                    self.cursor = self.input.len();
+                if let Some(p) = restore {
+                    match p.file {
+                        // A file goes back on the attachments, to send again.
+                        Some(f) => self.attached.push(f.att),
+                        None => {
+                            self.input = p.text;
+                            self.cursor = self.input.len();
+                        }
+                    }
                     self.clamp_sel();
                 }
                 self.focus = Focus::Input;
@@ -1971,6 +2255,12 @@ impl App {
             // Alt+letter is usually a fast Esc+letter, not text.
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 self.insert_char(c)
+            }
+            // In an empty input, Backspace takes off the last attachment.
+            KeyCode::Backspace if self.input.is_empty() && !self.attached.is_empty() => {
+                if let Some(a) = self.attached.pop() {
+                    self.flash_msg(format!("Removed {}", a.name), now);
+                }
             }
             KeyCode::Backspace => {
                 if let Some(c) = self.input[..self.cursor].chars().next_back() {
@@ -2319,6 +2609,164 @@ mod tests {
                 .all(|e| !matches!(e, Effect::Notify { .. })),
             "own messages don't notify"
         );
+    }
+
+    #[test]
+    fn files_upload_in_pieces_and_in_order() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now); // open chat 1
+        let id = requests(&mut app)[0].0;
+        app.on_line(
+            &line(&Response {
+                id,
+                messages: Some(vec![msg(10, 1, false, "hi")]),
+                ..Default::default()
+            }),
+            now,
+        );
+        let dir = std::env::temp_dir().join(format!("omabubble-send-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("big.bin"), dir.join("small.txt"));
+        std::fs::write(&a, vec![7u8; attach::CHUNK + 10]).unwrap();
+        std::fs::write(&b, b"hello").unwrap();
+
+        // Pasting (or dropping) paths attaches; ordinary text is typed.
+        app.on_paste(a.to_str().unwrap());
+        app.on_paste(&format!("'{}'", b.display()));
+        app.on_paste("look");
+        assert_eq!(app.attached.len(), 2);
+        assert_eq!(app.input, "look");
+        app.on_key(key(KeyCode::Enter), now);
+        assert!(app.attached.is_empty() && app.input.is_empty());
+        assert_eq!(app.pending.len(), 3);
+
+        let reply = |app: &mut App, id: u64, upload: Option<&str>| {
+            app.on_line(
+                &line(&Response {
+                    id,
+                    ok: Some(true),
+                    upload: upload.map(String::from),
+                    service: Some("iMessage".into()),
+                    ..Default::default()
+                }),
+                now,
+            )
+        };
+        let one = |app: &mut App| {
+            let mut r = requests(app);
+            assert_eq!(r.len(), 1, "one request at a time: {r:?}");
+            r.remove(0)
+        };
+
+        // The big file: started, sent in two pieces, then sent.
+        let (id, cmd) = one(&mut app);
+        assert!(
+            matches!(&cmd, Command::UploadStart { name, size } if name == "big.bin" && *size == attach::CHUNK as u64 + 10)
+        );
+        reply(&mut app, id, Some("u1"));
+        let (id, cmd) = one(&mut app);
+        let Command::UploadChunk {
+            upload,
+            offset,
+            data,
+        } = &cmd
+        else {
+            panic!("{cmd:?}")
+        };
+        assert_eq!((upload.as_str(), *offset), ("u1", 0));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap()
+                .len(),
+            attach::CHUNK
+        );
+        assert!(app.pending[0].uploading());
+        reply(&mut app, id, None);
+        let (id, cmd) = one(&mut app);
+        assert!(
+            matches!(cmd, Command::UploadChunk { offset, .. } if offset == attach::CHUNK as u64)
+        );
+        reply(&mut app, id, None);
+        let (id, cmd) = one(&mut app);
+        assert!(
+            matches!(&cmd, Command::SendFile { upload, chat_guid: Some(_), .. } if upload == "u1")
+        );
+        assert!(
+            app.pending[1].queued && app.pending[2].queued,
+            "the rest wait"
+        );
+        reply(&mut app, id, None);
+
+        // Then the small file, then the text.
+        let (id, cmd) = one(&mut app);
+        assert!(matches!(&cmd, Command::UploadStart { name, .. } if name == "small.txt"));
+        reply(&mut app, id, Some("u2"));
+        let (id, _) = one(&mut app);
+        // The upload fails: it's marked, and the text goes anyway.
+        app.on_line(&line(&Response::error(id, "disk full")), now);
+        assert_eq!(app.pending[1].state, PendState::Failed("disk full".into()));
+        let (_, cmd) = one(&mut app);
+        assert!(matches!(&cmd, Command::Send { text, .. } if text == "look"));
+
+        // The first file's echo: a message from me with an attachment.
+        let mut echo = msg(11, 1, true, "");
+        echo.attachments = vec![proto::Attachment {
+            name: "big.bin".into(),
+            mime: None,
+            id: 5,
+            image: false,
+        }];
+        app.on_line(&line(&Event::NewMessage { message: echo }), now);
+        assert_eq!(app.pending.len(), 2, "the big file is confirmed");
+        assert!(
+            app.pending
+                .iter()
+                .all(|p| p.file.as_ref().is_none_or(|f| f.att.name != "big.bin"))
+        );
+
+        // Enter on the failed file puts it back on the attachments.
+        app.focus = Focus::Messages;
+        let failed = app
+            .items()
+            .iter()
+            .position(|it| matches!(it, Item::Pending(p) if p.file.is_some()));
+        app.view.as_mut().unwrap().sel = failed;
+        app.on_key(key(KeyCode::Enter), now);
+        assert_eq!(app.attached.len(), 1);
+        assert_eq!(app.attached[0].name, "small.txt");
+        assert_eq!(app.focus, Focus::Input);
+        // Backspace in the empty input takes it off again.
+        app.on_key(key(KeyCode::Backspace), now);
+        assert!(app.attached.is_empty());
+
+        // An upload cut off by a dropped connection fails.
+        app.on_paste(b.to_str().unwrap());
+        app.on_key(key(KeyCode::Enter), now);
+        let _ = one(&mut app);
+        app.on_closed("eof".into(), now);
+        let last = app.pending.last().unwrap();
+        assert!(matches!(&last.state, PendState::Failed(e) if e.contains("connection lost")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn attachments_stay_with_their_chat() {
+        let (mut app, now) = connected();
+        app.on_key(key(KeyCode::Enter), now); // chat 1
+        let f = std::env::temp_dir().join(format!("omabubble-keep-{}.txt", std::process::id()));
+        std::fs::write(&f, b"x").unwrap();
+        app.on_paste(f.to_str().unwrap());
+        assert_eq!(app.attached.len(), 1);
+        app.on_key(key(KeyCode::Esc), now); // to the list
+        app.on_key(key(KeyCode::Char('j')), now);
+        app.on_key(key(KeyCode::Enter), now); // chat 2
+        assert!(app.attached.is_empty());
+        app.on_key(key(KeyCode::Esc), now);
+        app.on_key(key(KeyCode::Char('k')), now);
+        app.on_key(key(KeyCode::Enter), now); // back to chat 1
+        assert_eq!(app.attached.len(), 1);
+        std::fs::remove_file(f).unwrap();
     }
 
     #[test]

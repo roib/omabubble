@@ -1,4 +1,5 @@
 mod app;
+mod attach;
 mod clipboard;
 mod config;
 mod conn;
