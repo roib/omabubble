@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.4.0 (2026-10-14)
+
 **Protocol version 5:** update the bridge and the TUI together.
 
 - **Send files.** Drop a file onto the terminal, paste its path, or press
