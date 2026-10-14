@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.4.2 (2026-10-14)
+
 - The `Ctrl-A` attach prompt previews the chosen file (or the top match)
   beside the list, with its size in pixels and its format. JPEG, PNG, GIF,
   WebP and BMP pictures are decoded in the background, the right way up;
