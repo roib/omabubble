@@ -8,6 +8,8 @@ same one.
 
 ## Unreleased
 
+## 0.4.3 (2026-10-18)
+
 - `notification_detail = "sender"` names who wrote in the notification's
   title but leaves the message out: the body says "New message". `true`
   (sender and preview) and `false` (only "New message") work as before.
