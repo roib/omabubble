@@ -519,11 +519,13 @@ impl App {
                 self.clock_skew = time
                     .map(|t| t - chrono::Utc::now().timestamp())
                     .filter(|d| d.abs() > CLOCK_SKEW_WARN);
-                // Same protocol is enough to work; a different release is
-                // still worth knowing about. Builds of one release differ
-                // only in the commit, which isn't compared.
-                self.bridge_mismatch = (release(&bridge) != release(env!("OMABUBBLE_VERSION")))
-                    .then(|| release(&bridge).to_string());
+                // Same protocol is enough to work; a different minor release
+                // is still worth knowing about. Patch releases and the
+                // commit a build came from aren't compared: a patch can
+                // change one side only.
+                self.bridge_mismatch = (minor(release(&bridge))
+                    != minor(release(env!("OMABUBBLE_VERSION"))))
+                .then(|| release(&bridge).to_string());
                 if version != PROTOCOL_VERSION {
                     self.status = Status::Fatal(format!(
                         "bridge {bridge} speaks protocol v{version}, this omabubble speaks v{PROTOCOL_VERSION}: \
@@ -2431,6 +2433,14 @@ fn release(version: &str) -> &str {
     version.split_whitespace().next().unwrap_or(version)
 }
 
+/// "0.4" of "0.4.3".
+fn minor(release: &str) -> &str {
+    match release.match_indices('.').nth(1) {
+        Some((i, _)) => &release[..i],
+        None => release,
+    }
+}
+
 /// Every chat row a (possibly merged) list entry stands for.
 fn chat_rows(c: &Chat) -> Vec<i64> {
     std::iter::once(c.chat_id)
@@ -4148,6 +4158,9 @@ mod tests {
         assert_eq!(app.bridge_mismatch, None, "only the commit differs");
         app.on_line(&hello(ours), now);
         assert_eq!(app.bridge_mismatch, None, "older bridges send no commit");
+        let patched = format!("{}.99 (1234567)", minor(ours));
+        app.on_line(&hello(&patched), now);
+        assert_eq!(app.bridge_mismatch, None, "a patch release apart");
         app.on_line(&hello("0.0.1 (1234567)"), now);
         assert_eq!(app.bridge_mismatch.as_deref(), Some("0.0.1"));
         assert_eq!(app.status, Status::Connected, "still usable");

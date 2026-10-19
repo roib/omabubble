@@ -8,6 +8,10 @@ same one.
 
 ## Unreleased
 
+- The status bar's bridge version warning shows only when the bridge is a
+  different minor release (0.4 and 0.5), not a different patch (0.4.2 and
+  0.4.3): a patch release can change the TUI or the bridge alone.
+
 ## 0.4.3 (2026-10-18)
 
 - `notification_detail = "sender"` names who wrote in the notification's
