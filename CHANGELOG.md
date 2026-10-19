@@ -8,6 +8,10 @@ same one.
 
 ## Unreleased
 
+- `notification_detail = "sender"` names who wrote in the notification's
+  title but leaves the message out: the body says "New message". `true`
+  (sender and preview) and `false` (only "New message") work as before.
+
 ## 0.4.2 (2026-10-14)
 
 - The `Ctrl-A` attach prompt previews the chosen file (or the top match)

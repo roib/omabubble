@@ -16,8 +16,9 @@ pub struct Config {
     /// Prepended to 10-digit numbers.
     pub country_code: String,
     pub notifications: bool,
-    /// Show who wrote and a preview in notifications. Off, they say only "New message".
-    pub notification_detail: bool,
+    /// What notifications show: who wrote and a preview (true), only who
+    /// wrote ("sender"), or only "New message" (false).
+    pub notification_detail: Detail,
     /// How long a notification banner stays up; 0 keeps it until dismissed.
     /// Desktops may clamp it (Omarchy: 8–30 s).
     pub notification_seconds: u32,
@@ -31,6 +32,36 @@ pub struct Config {
     /// Overrides for people the Mac's Contacts doesn't link; their chats are shown as one.
     #[serde(rename = "person")]
     pub people: Vec<Person>,
+}
+
+/// How much a notification tells: it ends up in the desktop's history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// Who wrote, and a preview of the message.
+    Full,
+    /// Who wrote; the body says only "New message".
+    Sender,
+    /// Only "New message".
+    Nothing,
+}
+
+impl<'de> Deserialize<'de> for Detail {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Word(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Detail::Full),
+            Raw::Bool(false) => Ok(Detail::Nothing),
+            Raw::Word(w) if w == "sender" => Ok(Detail::Sender),
+            Raw::Word(w) => Err(serde::de::Error::custom(format!(
+                "notification_detail is true, false or \"sender\", not \"{w}\""
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -51,7 +82,7 @@ impl Default for Config {
             command: None,
             country_code: "1".into(),
             notifications: true,
-            notification_detail: true,
+            notification_detail: Detail::Full,
             notification_seconds: 20,
             bell: false,
             mouse: true,
@@ -77,8 +108,8 @@ host = "mac-omabubble"
 country_code = "1"
 
 notifications = true
-# Desktops keep a notification history on disk. With this off, notifications
-# say only "New message": no sender, no preview.
+# Desktops keep a notification history on disk. true: who wrote and a
+# preview. "sender": who wrote, and "New message". false: only "New message".
 notification_detail = true
 # How long a banner stays up. 0: until you click or dismiss it.
 notification_seconds = 20
@@ -135,5 +166,18 @@ mod tests {
         .unwrap();
         assert_eq!(with_person.people.len(), 1);
         assert_eq!(with_person.people[0].name.as_deref(), Some("Alex"));
+    }
+
+    #[test]
+    fn notification_detail_values() {
+        use super::{Config, Detail};
+        let parse = |v: &str| toml::from_str::<Config>(&format!("notification_detail = {v}"));
+        assert_eq!(parse("true").unwrap().notification_detail, Detail::Full);
+        assert_eq!(parse("false").unwrap().notification_detail, Detail::Nothing);
+        assert_eq!(
+            parse("\"sender\"").unwrap().notification_detail,
+            Detail::Sender
+        );
+        assert!(parse("\"all\"").is_err());
     }
 }

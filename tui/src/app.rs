@@ -2,7 +2,7 @@
 //! are queued in `effects` and carried out by the main loop.
 
 use crate::attach::{self, Attached};
-use crate::config::{Config, Person};
+use crate::config::{Config, Detail, Person};
 use crate::emoji;
 use crate::links;
 use crate::phone;
@@ -314,7 +314,7 @@ pub struct App {
     pub host_label: String,
     country_code: String,
     notifications: bool,
-    notification_detail: bool,
+    notification_detail: Detail,
     bell: bool,
     /// Config overrides plus the groups the bridge found in Contacts.
     people: Vec<Person>,
@@ -1092,10 +1092,10 @@ impl App {
                     Some(d) => d,
                     None => sender,
                 };
-                let (title, body) = if self.notification_detail {
-                    (format!("omabubble: {title}"), preview(&m))
-                } else {
-                    ("omabubble".to_string(), "New message".to_string())
+                let (title, body) = match self.notification_detail {
+                    Detail::Full => (format!("omabubble: {title}"), preview(&m)),
+                    Detail::Sender => (format!("omabubble: {title}"), "New message".to_string()),
+                    Detail::Nothing => ("omabubble".to_string(), "New message".to_string()),
                 };
                 self.effects.push(Effect::Notify {
                     title,
@@ -3672,7 +3672,7 @@ mod tests {
     #[test]
     fn notification_detail_can_be_withheld() {
         let (mut app, now) = connected_with(&Config {
-            notification_detail: false,
+            notification_detail: Detail::Nothing,
             ..cfg()
         });
         app.on_line(
@@ -3684,6 +3684,28 @@ mod tests {
         assert!(app.effects.iter().any(
             |e| matches!(e, Effect::Notify { body, title, .. } if body == "New message" && title == "omabubble")
         ));
+    }
+
+    #[test]
+    fn notification_can_name_sender_without_preview() {
+        let (mut app, now) = connected_with(&Config {
+            notification_detail: Detail::Sender,
+            ..cfg()
+        });
+        app.on_line(
+            &line(&Event::NewMessage {
+                message: msg(20, 2, false, "secret"),
+            }),
+            now,
+        );
+        let notify = app.effects.iter().find_map(|e| match e {
+            Effect::Notify { title, body, .. } => Some((title.clone(), body.clone())),
+            _ => None,
+        });
+        let (title, body) = notify.expect("a notification");
+        assert_eq!(body, "New message");
+        assert!(title.starts_with("omabubble: ") && title.len() > "omabubble: ".len());
+        assert!(!title.contains("secret"));
     }
 
     #[test]

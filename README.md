@@ -146,7 +146,7 @@ one prints a sample with every option. The main ones:
 host = "mac-omabubble"
 country_code = "1"      # prepended to 10-digit numbers in the new-conversation popup
 notifications = true    # notify-send for messages in chats you aren't looking at; on Hyprland, clicking one opens the chat in omabubble's window
-notification_detail = true  # false: notifications say only "New message" (see Security)
+notification_detail = true  # "sender": who wrote, no preview; false: only "New message" (see Security)
 notification_seconds = 20   # how long banners stay up; 0 = until dismissed (Omarchy allows 8–30)
 bell = false
 # ssh_args = ["-p", "2222"]                                        # if the host alias doesn't cover it
@@ -300,7 +300,8 @@ What the design protects against, and what it doesn't.
   only mode that logs a message's argv.
 - **Notifications** carry the sender and a preview, and desktops (Omarchy
   included) keep a notification history on disk. Set
-  `notification_detail = false` to notify with just "New message".
+  `notification_detail = "sender"` to show who wrote but not what, or
+  `false` to notify with just "New message".
 - **Pictures:** a request names an attachment by id, never a path. The bridge
   serves it only if chat.db lists it as a picture type (JPEG, PNG, GIF, HEIC,
   WebP, TIFF), the file sits inside `~/Library/Messages/Attachments` once `~`
